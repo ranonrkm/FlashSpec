@@ -1,9 +1,9 @@
-# Hesse
+# FlashSpec
 ## Installation
 ### Create Virtual Environment
 ``` bash
-conda create -n hesse python=3.11
-conda activate hesse
+conda create -n flashspec python=3.11
+conda activate flashspec
 ```
 
 ### Install Necessary Packages
@@ -36,7 +36,7 @@ export MODEL_REPO=meta-llama/Llama-2-7b-hf
 ./scripts/prepare.sh $MODEL_REPO
 ```
 
-### Test Latency
+<!-- ### Test Latency
 ```bash
 ENABLE_INTRA_NODE_COMM=1 torchrun --standalone --nproc_per_node=8 --master_port=13456 tests/test_latency_new.py --maxlen 272 --declen_list 1 2 4 8 --prefixlen 128 --batch 1 --checkpoint_path checkpoints/meta-llama/Llama-2-70b-hf/model.pth --rank_group 0 1 2 3 4 5 6 7 --compile
 ```
@@ -44,9 +44,9 @@ ENABLE_INTRA_NODE_COMM=1 torchrun --standalone --nproc_per_node=8 --master_port=
 ### Run Baseline
 ```bash
 ENABLE_INTRA_NODE_COMM=1 torchrun --standalone --nproc_per_node=8 --master_port=13456 tests/baseline_benchmark_new.py --B 1 --checkpoint_path checkpoints/meta-llama/Llama-2-70b-hf/model.pth --compile --rank_group 0 1 2 3 4 5 6 7
-```
+``` -->
 
-### Generate Acceptance Rate Vector
+<!-- ### Generate Acceptance Rate Vector
 ```bash
 ENABLE_INTRA_NODE_COMM=1 torchrun --standalone --nproc_per_node=8 --master_port=13456 tests/test_accept_new.py --target_group 0 1 2 3 4 5 6 7 --draft_group 0 1 2 3 4 5 6 7 --T 0.6 --P 0.9 --M 256 --W 31 --dataset cnn --dst new-7b-70b-acc.pt --compile
 ```
@@ -64,9 +64,9 @@ ENABLE_INTRA_NODE_COMM=1 torchrun --standalone --nproc_per_node=8 tests/batchtre
 ### Run Pipeline Tree Speculative Decoding
 ```bash
 ENABLE_INTRA_NODE_COMM=1 torchrun --standalone --nproc_per_node=8 tests/pipetree_benchmark_new.py --target_group 0 1 2 3 4 5 6 --draft_group 7 --T 0.6 --P 0.9 --M 256 --B 2 --growmap demo_tree.pt --Mode fast --compile
-```
+``` -->
 
-## Performance on A100 80G PCIE
+<!-- ## Performance on A100 80G PCIE
 Unit in ms, Prefix = 512, Batch size = 1
 | Model / # GPUs | 1 | 2 | 4 | 8 |
 |---|---|---|---|---|
@@ -107,4 +107,4 @@ PP+TP Degree= 4 4 means the first and second pipeline stages are both doing tens
 
 | PP+TP Degree | 2 2 | 2 2 2 | 4 4 |
 |---|---|---|---|
-| Llama-2-7b  | 14.6  | 14.6 | 9.1 |
+| Llama-2-7b  | 14.6  | 14.6 | 9.1 | -->
