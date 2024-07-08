@@ -39,14 +39,44 @@ class LMBackend:
             return self.model_forward[dec_len](
                 model=self.model, 
                 x=input_ids.clone(),
-                input_pos=position_ids.clone(), cache_seqlens= cache_seqlens.clone()).clone() if dec_len in self.model_forward.keys() else self.model.forward(input_ids, position_ids, cache_seqlens).clone()
+                input_pos=position_ids.clone(), cache_seqlens= cache_seqlens.clone()) if dec_len in self.model_forward.keys() else self.model.forward(input_ids.clone(), position_ids.clone(), cache_seqlens.clone())
     
     @torch.inference_mode()
-    def encode(self, input_ids: torch.LongTensor, position_ids: torch.LongTensor, cache_seqlens: torch.Tensor):
-            return self.prefill(
-                 model=self.model, 
-                 x=input_ids.clone(),
-                 input_pos=position_ids.clone(), cache_seqlens=cache_seqlens.clone()).clone()            
+    def encode(self, input_ids: torch.LongTensor, position_ids: torch.LongTensor, cache_seqlens: torch.Tensor, division: bool = False):
+        logits = None
+        seq_len = input_ids.shape[1]
+        if division:
+            chunk_size = 128
+            num_chunks = (seq_len + chunk_size - 1) // chunk_size  # Ceil division
+            outputs = []
+            for i in range(num_chunks):
+                start_idx = i * chunk_size
+                end_idx = min((i + 1) * chunk_size, seq_len)
+                
+                chunk_input_ids = input_ids[:, start_idx:end_idx]
+                chunk_position_ids = position_ids[:, start_idx:end_idx]
+                chunk_cache_seqlens = cache_seqlens + start_idx
+
+                chunk_output = self.prefill(
+                    model=self.model,
+                    x=chunk_input_ids,
+                    input_pos=chunk_position_ids,
+                    cache_seqlens=chunk_cache_seqlens
+                )
+
+                outputs.append(chunk_output)
+            logits = torch.cat(outputs, dim=1)
+
+        else:
+            logits = self.prefill(
+                model=self.model,
+                x=input_ids,
+                input_pos=position_ids,
+                cache_seqlens=cache_seqlens
+            )
+        
+        return logits
+          
     
     @torch.inference_mode()
     def clear_kv(self):

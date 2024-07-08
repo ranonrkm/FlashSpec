@@ -50,7 +50,7 @@ llm.setup_caches(max_batch_size=max_batch_size, max_seq_length=max_seq_length)
 cache_lens = torch.zeros(max_batch_size, dtype=torch.int32, device=device)
 prompt = torch.randint(low=3, high=30000, size=(max_batch_size, prefix_len), device=device)
 prefill_pos = torch.arange(0, prefix_len, device=device).repeat(max_batch_size,1)
-llm.encode(input_ids=prompt, position_ids=prefill_pos, cache_seqlens=cache_lens)
+llm.encode(input_ids=prompt, position_ids=prefill_pos, cache_seqlens=cache_lens, division=prefix_len>1000)
 cache_lens += prefix_len
 
 for declen in dec_list:
