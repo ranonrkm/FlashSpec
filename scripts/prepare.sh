@@ -1,0 +1,1 @@
+python scripts/download.py --repo_id $1 --hf_token $2 && python scripts/convert_hf_checkpoint.py --checkpoint_dir checkpoints/$1
