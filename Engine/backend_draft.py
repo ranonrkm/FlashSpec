@@ -1,8 +1,8 @@
 import torch
-from FlashSpec.Engine.model import Transformer
+from FlashSpec.Engine.model_draft import Transformer
 from FlashSpec.Engine.utils import load_model
 
-class LMBackend:
+class LMBackend_Draft:
     def __init__(self, dtype = torch.bfloat16, device: str = "cuda:0", dec_list: list = [1]) -> None:
         self.dtype = dtype
         self.device = device
@@ -62,6 +62,7 @@ class LMBackend:
                     input_pos=chunk_position_ids,
                     cache_seqlens=chunk_cache_seqlens
                 )
+
 
         else:
             logits = self.prefill(
