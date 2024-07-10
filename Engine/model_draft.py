@@ -146,9 +146,9 @@ class Transformer(nn.Module):
         x = self.tok_embeddings(idx)
         for i, layer in enumerate(self.layers):
             x = layer(x, q_freqs_cis, self.k_freqs, cache_seqlens)
-        x = self.norm(x)
-        logits = self.output(x)
-        return logits
+        # x = self.norm(x)
+        # logits = self.output(self.norm(x))
+        return self.output(self.norm(x))
 
     @classmethod
     def from_name(cls, name: str):
