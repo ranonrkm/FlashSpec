@@ -15,7 +15,7 @@ else:
     # Distributed is not supported on MacOS
     funcol = None
 
-from LongSpec.Engine.model import Attention, FeedForward, Transformer
+from FlashSpec.Engine.model import Attention, FeedForward, Transformer
 from itertools import accumulate
 
 

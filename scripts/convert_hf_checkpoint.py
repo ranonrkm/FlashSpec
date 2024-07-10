@@ -18,7 +18,7 @@ import torch
 wd = Path(__file__).parent.parent.resolve()
 sys.path.append(str(wd))
 
-from LongSpec.Engine.model import ModelArgs
+from FlashSpec.Engine.model import ModelArgs
 
 
 @torch.inference_mode()
