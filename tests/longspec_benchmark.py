@@ -65,6 +65,7 @@ engine.load_model(checkpoint_path, use_tp=use_tp, rank_group = args.rank_group, 
 if args.compile:
     engine.compile()
 engine.setup_caches(max_batch_size=BATCH_SIZE, max_seq_length=MAX_LEN)
+target_sample = cuda_graph_for_sampling_argmax_batch(device=DEVICE, dtype=DTYPE, batch_size=BATCH_SIZE, idx_len=args.gamma+1)
 
 if not use_tp:
     draft = LMBackend_Draft(dtype=DTYPE, device=DEVICE)
@@ -148,7 +149,8 @@ for step, batch in tqdm(enumerate(dataloader), total=num_eval_steps):
 
         # Target Verification
         target_logits = engine.inference(tokens_buffer)
-        target_tokens = sample(target_logits, args.top_p, args.temperature)
+        # target_tokens = sample(target_logits, args.top_p, args.temperature)
+        target_tokens = target_sample(target_logits)
         target_steps+=1
 
         if benchmark:
