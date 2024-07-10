@@ -79,7 +79,7 @@ else:
         draft.load_model(draft_checkpoint_path, use_tp=draft_tp, rank_group=args.draft_ranks, group=draft_group)
         if args.compile:
             draft.compile()
-        draft.setup_caches(max_batch_size=BATCH_SIZE, max_seq_length=MAX_LEN, kv_len=512)
+        draft.setup_caches(max_batch_size=BATCH_SIZE, max_seq_length=MAX_LEN, kv_len=256)
         draft_sample = cuda_graph_for_sampling_argmax_batch(device=DEVICE, dtype=DTYPE, batch_size=BATCH_SIZE)
     dist.barrier()
 
