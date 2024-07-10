@@ -4,7 +4,7 @@ import sys
 sys.path.append("..")
 from pathlib import Path
 import torch.distributed as dist
-from FlashSpec.Engine.utils import setup_seed, sample, sampling_argmax_batch, cuda_graph_for_target_sample
+from FlashSpec.Engine.utils import setup_seed, sample
 from FlashSpec.Data.data_converter import convert_pg19_dataset
 from transformers import LlamaTokenizer
 from torch.utils.data.dataloader import DataLoader
@@ -49,8 +49,6 @@ if args.compile:
     engine.compile()
 engine.setup_caches(max_batch_size=BATCH_SIZE, max_seq_length=MAX_LEN)
 
-sample_cg = cuda_graph_for_target_sample(device=DEVICE, dtype=DTYPE, idx_len=1, batch_size=BATCH_SIZE, top_p=args.top_p, T = args.T)
-
 tokenizer = LlamaTokenizer.from_pretrained("meta-llama/Llama-2-7b-hf")
 tokenizer.pad_token = tokenizer.eos_token
 dataset = convert_pg19_dataset(tokenizer=tokenizer, seq_len=4096)
@@ -79,13 +77,15 @@ for step, batch in tqdm(enumerate(dataloader), total=num_eval_steps):
         if (next_tokens[:,-1] == 2)._is_any_true() or (next_tokens[:,-1] == 0)._is_any_true(): terminate = True
     torch.cuda.synchronize()
     t2=time.perf_counter()
+
+    if args.printoutput:
+        for i in range(BATCH_SIZE):
+            print(tokenizer.decode(output[i]))
+            
     total_time += t2-t1
     print(f"Tokens per second :{total_time/model_steps}")
     if step == 0:
         total_time = 0.0
         model_steps = 0
-    if args.printoutput:
-        for i in range(BATCH_SIZE):
-            print(tokenizer.decode(output[i]))
     if use_tp:
         dist.barrier()
