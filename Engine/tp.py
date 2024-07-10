@@ -51,13 +51,17 @@ def _select_kv_heads(num_kv_heads, rank_group:list):
         end = cumulative_distribution[rank]
     return start, end
 
-def init_dist():
+def init_dist(draft_ranks=None):
     global_rank = _get_global_rank()
     world_size = _get_world_size()
     torch.cuda.set_device(global_rank)
     dist.init_process_group(backend="nccl", rank=global_rank, world_size=world_size)
     global_group = dist.group.WORLD
-    return global_rank, global_group
+    if draft_ranks != None:
+        draft_group = dist.new_group(draft_ranks)
+        return global_rank, global_group, draft_group
+    else:
+        return global_rank, global_group
 
 
 def _apply_tp_linear(linear: nn.Linear, style: str, weight_splits: List[int] = [], rank_group=None, num_kv_heads = None, num_heads = None, head_dim = None) -> None:
