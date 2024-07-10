@@ -7,6 +7,7 @@ import torch._dynamo.config
 import torch._inductor.config
 import argparse
 from FlashSpec.Engine.backend import LMBackend
+from FlashSpec.Engine.backend_draft import LMBackend_Draft
 
 parser = argparse.ArgumentParser(description='Your CLI description.')
 parser.add_argument('--checkpoint_path', type=Path, default=Path("checkpoints/meta-Transformer/Transformer-2-7b-chat-hf/model.pth"), help='Model checkpoint path.')

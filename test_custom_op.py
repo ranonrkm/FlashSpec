@@ -1,42 +1,32 @@
-import torch
-from flash_attn import flash_attn_with_kvcache
+# import torch
 
-torch.cuda.set_device(0)
+# BATCH_SIZE = 4
+# gamma = 4
+# tokens_buffer = torch.arange(BATCH_SIZE * (gamma + 1)).view(BATCH_SIZE, gamma + 1).to(torch.long).cuda()
+# output = torch.zeros((BATCH_SIZE, 10), device='cuda').long()
+# accept_nums = torch.tensor([3, 2, 5, 4], device='cuda').long()  # shape (BATCH_SIZE,)
+# offset = torch.tensor([1, 2, 3, 4], device='cuda').long()  # shape (BATCH_SIZE,)
 
-with torch.device("cuda"):
-    q = torch.randn((1, 2, 2, 4), dtype=torch.bfloat16)
-    k_cache = torch.zeros((1, 5, 2, 4), dtype=torch.bfloat16)
-    v_cache = torch.zeros((1, 5, 2, 4), dtype=torch.bfloat16)
-    k = torch.randn((1, 2, 2, 4), dtype=torch.bfloat16)
-    v = torch.randn((1, 2, 2, 4), dtype=torch.bfloat16)
-    cache_seqlens = torch.tensor([0], dtype=torch.int32)
-    causal = True
+# # Create a mask for the positions to fill in the output tensor
+# positions = torch.arange(10, device='cuda').view(1, -1).repeat(BATCH_SIZE, 1)
+# mask = (positions < (offset + accept_nums).view(-1, 1)) & (positions >= offset.view(-1, 1))
 
-torch.library.define(
-    "mylib::custom_func",
-    "(Tensor q, Tensor(a!) k_cache, Tensor(a!) v_cache, Tensor k, Tensor v, Tensor cache_seqlens, bool causal) -> Tensor",
+# positions_buffer = torch.arange(gamma+1, device='cuda').view(1, -1).repeat(BATCH_SIZE, 1)
+# mask_buffer = positions_buffer<accept_nums.view(-1,1)
+
+
+# output[mask] = tokens_buffer[mask_buffer]
+# print(tokens_buffer)
+# print(output)
+
+
+
+from transformers.models.llama.modeling_llama import(
+    LlamaRMSNorm,
+    LlamaConfig,
+    PreTrainedModel,
+    repeat_kv,
+    ACT2FN
 )
 
-@torch.library.impl("mylib::custom_func", "cuda")
-def custom_func(q, k_cache, v_cache, k, v, cache_seqlens, causal):
-    return flash_attn_with_kvcache(
-        q, k_cache, v_cache, k=k, v=v, cache_seqlens=cache_seqlens, causal=causal
-    )
-
-@torch.library.register_fake("mylib::custom_func")
-def custom_func_abstract(q, k_cache, v_cache, k, v, cache_seqlens, causal):
-    return torch.empty_like(q)
-
-assert torch.allclose(
-    flash_attn_with_kvcache(q, k_cache, v_cache, k=k, v=v, cache_seqlens=cache_seqlens, causal=causal),
-    torch.ops.mylib.custom_func(q, k_cache, v_cache, k, v, cache_seqlens, causal),
-)
-
-compiled_func = torch.compile(torch.ops.mylib.custom_func, fullgraph=True)
-
-out = compiled_func(q, k_cache, v_cache, k, v, cache_seqlens, causal)
-print(out)
-print(k_cache)
-print(v_cache)
-print(cache_seqlens)
-
+print(LlamaConfig.from_pretrained("JackFram/llama-68m"))

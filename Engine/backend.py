@@ -11,6 +11,7 @@ class LMBackend:
             if dec_len == 0: continue
             self.model_forward[dec_len] = lambda model, x, input_pos, cache_seqlens: model(x, input_pos, cache_seqlens)
         self.prefill = lambda model, x, input_pos, cache_seqlens: model(x, input_pos, cache_seqlens)
+        self.cachelens = None
 
     def load_model(self, checkpoints: str, use_tp: bool, rank_group=None, group = None):
         self.model: Transformer = load_model(checkpoint_path=checkpoints, device=self.device, precision=self.dtype, use_tp= use_tp, rank_group=rank_group, group = group)
@@ -19,6 +20,7 @@ class LMBackend:
     def setup_caches(self, max_batch_size: int = 1, max_seq_length: int = 2048):
         self.max_length = max_seq_length
         self.batch_size = max_batch_size
+        self.cachelens = torch.zeros(max_batch_size, dtype=torch.int32, device=self.device)
         with torch.device(self.device):
             self.model.setup_caches(max_batch_size=max_batch_size, max_seq_length=max_seq_length)
 
@@ -34,17 +36,24 @@ class LMBackend:
              self.prefill = torch.compile(self.prefill, mode="reduce-overhead", fullgraph=True)      
              
     @torch.inference_mode()
-    def inference(self, input_ids: torch.LongTensor, position_ids: torch.LongTensor, cache_seqlens: torch.Tensor):
+    def inference(self, input_ids: torch.LongTensor):
             dec_len = input_ids.shape[1]
-            return self.model_forward[dec_len](
+            position_ids = self.cachelens.view(-1,1) + torch.arange(dec_len, device=self.device).unsqueeze(0).repeat(self.batch_size,1)
+            logits = self.model_forward[dec_len](
                 model=self.model, 
                 x=input_ids.clone(),
-                input_pos=position_ids.clone(), cache_seqlens= cache_seqlens.clone()) if dec_len in self.model_forward.keys() else self.model.forward(input_ids.clone(), position_ids.clone(), cache_seqlens.clone())
+                input_pos=position_ids.clone(), 
+                cache_seqlens= self.cachelens.clone()) if dec_len in self.model_forward.keys() else self.model.forward(input_ids.clone(), position_ids.clone(), self.cachelens.clone())
+            self.cachelens += dec_len
+            return logits
     
     @torch.inference_mode()
-    def encode(self, input_ids: torch.LongTensor, position_ids: torch.LongTensor, cache_seqlens: torch.Tensor, division: bool = False):
+    def encode(self, input_ids: torch.LongTensor):
+        self.cachelens.zero_()
         logits = None
         seq_len = input_ids.shape[1]
+        position_ids = torch.arange(seq_len, device=self.device).unsqueeze(0).repeat(self.batch_size,1)
+        division = seq_len > 1000
         if division:
             chunk_size = 128
             num_chunks = (seq_len + chunk_size - 1) // chunk_size  # Ceil division
@@ -54,7 +63,7 @@ class LMBackend:
                 
                 chunk_input_ids = input_ids[:, start_idx:end_idx]
                 chunk_position_ids = position_ids[:, start_idx:end_idx]
-                chunk_cache_seqlens = cache_seqlens + start_idx
+                chunk_cache_seqlens = self.cachelens + start_idx
 
                 logits = self.prefill(
                     model=self.model,
@@ -68,8 +77,10 @@ class LMBackend:
                 model=self.model,
                 x=input_ids,
                 input_pos=position_ids,
-                cache_seqlens=cache_seqlens
+                cache_seqlens=self.cachelens
             )
+
+        self.cachelens += seq_len
         
         return logits
           

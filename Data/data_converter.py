@@ -1,5 +1,8 @@
 import torch
 from datasets import load_dataset
+import os
+from torch.utils.data import TensorDataset
+from tqdm import tqdm
 
 def convert_c4_dataset(tokenizer, file_path):
     dataset = load_dataset("json", data_files=file_path, split="train")
@@ -32,3 +35,31 @@ def convert_cnn_dataset(tokenizer, seq_len = 256):
     dataset = dataset.map(tokenize_function, batched=True, remove_columns=['article'])
     dataset.set_format(type='torch', columns=['input_ids', 'attention_mask'])
     return dataset
+
+def convert_pg19_dataset(tokenizer, seq_len = 4096):
+    datasetparent = "Data/pg19/"
+    d_files = os.listdir(datasetparent)
+    dataset = load_dataset("json", data_files = [datasetparent + name for name in d_files], split = "train")
+    tokenized_prompts = []
+    for i in tqdm(range(0,20)):
+        prompt = dataset[i]['text']
+        tokenized_prompt = tokenizer.encode(prompt, return_tensors="pt").split(seq_len, dim=-1)[2:-1]
+        for i in range(len(tokenized_prompt)):
+             tokenized_prompt[i][:, 0] = 1
+             tokenized_prompts.append(tokenized_prompt[i])
+    data = torch.cat(tokenized_prompts, dim=0)
+    return TensorDataset(data)
+
+# if __name__ == "__main__":
+#     from transformers import LlamaTokenizer, DataCollatorForLanguageModeling
+#     from torch.utils.data import DataLoader, TensorDataset
+#     from tqdm import tqdm
+#     tokenizer = LlamaTokenizer.from_pretrained("meta-llama/Llama-2-7b-hf")
+#     tokenizer.pad_token = tokenizer.eos_token
+#     dataset = convert_pg19_dataset(tokenizer=tokenizer, seq_len=4096)
+
+#     dataloader = DataLoader(dataset, batch_size=8, shuffle=False, drop_last=True)
+#     num_eval_steps = len(dataloader)
+#     for step, batch in tqdm(enumerate(dataloader), total=num_eval_steps):
+#         input_ids = batch[0]
+    
