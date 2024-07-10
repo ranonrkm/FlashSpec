@@ -233,7 +233,7 @@ for step, batch in tqdm(enumerate(dataloader), total=num_eval_steps):
             print(tokenizer.decode(output[i, :num_nodes[i]]))
     print("total time :{:.5f}s, time per iter :{:.5f}s, decoding step: {}, large model step: {}".format(total_time, total_time / target_steps, num_gen_tokens, target_steps))
     if benchmark:
-        print("target time :{:.5f}s, draft time :{:.5f}s, verify loop : {}, avg generate len per sentence: {}".format(target_time/target_steps, draft_time / target_steps, verify_loop/target_steps, num_gen_tokens/target_steps/BATCH_SIZE))
+        print("target time :{:.5f}s, draft time :{:.5f}s, verify loop : {}, avg generate len per sentence: {}".format(target_time/target_steps, (draft_time*args.gamma) / (target_steps*(args.gamma+1)), verify_loop/target_steps, num_gen_tokens/target_steps/BATCH_SIZE))
     if step == 0:
         total_time = 0.0
         num_gen_tokens = 0
