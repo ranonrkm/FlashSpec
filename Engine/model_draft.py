@@ -7,6 +7,7 @@ from torch import Tensor
 from torch.nn import functional as F
 from flash_attn import flash_attn_with_kvcache
 from torch.distributed import _functional_collectives as funcol
+import torch.distributed as dist
 
 torch.library.define(
     "mylib::custom_func_2",
@@ -270,7 +271,8 @@ class Attention(nn.Module):
 
         y = self.wo(y)
         if self.process_group != None:
-            return funcol.all_reduce(y, "sum", self.process_group)
+            # return funcol.all_reduce(y, "sum", self.process_group)
+            dist.all_reduce(y, group = self.process_group)
         return y
 
 
