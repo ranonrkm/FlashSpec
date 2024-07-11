@@ -58,7 +58,7 @@ class LMBackend_Draft:
         self.cachelens.zero_()
         logits = None
         seq_len = input_ids.shape[1]
-        chunk_size = 32
+        chunk_size = 8
         num_chunks = (seq_len + chunk_size - 1) // chunk_size  # Ceil division
         for i in range(num_chunks):
             start_idx = i * chunk_size
