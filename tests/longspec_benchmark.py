@@ -30,6 +30,7 @@ parser.add_argument('--rank_group', nargs='+', type=int, help='Target group of r
 parser.add_argument('--draft_ranks', nargs='+', type=int, help='Target group of ranks')
 parser.add_argument('--printoutput', action='store_true', help='Whether to compile the model.')
 parser.add_argument('--benchmark', action='store_true', help='Whether to compile the model.')
+parser.add_argument('--streamingllm_budget', type=int, default=256, help='Dataset end index.')
 
 
 args = parser.parse_args()
@@ -73,7 +74,7 @@ if not use_tp:
     draft.load_model(draft_checkpoint_path, use_tp=False, rank_group=args.rank_group, group=global_group)
     if args.compile:
         draft.compile()
-    draft.setup_caches(max_batch_size=BATCH_SIZE, max_seq_length=MAX_LEN, kv_len=256)
+    draft.setup_caches(max_batch_size=BATCH_SIZE, max_seq_length=MAX_LEN, kv_len=args.streamingllm_budget)
     draft_sample = {}
     for i in [1, 2]:
         draft_sample[i] = cuda_graph_for_sampling_argmax_batch(device=DEVICE, dtype=DTYPE, batch_size=BATCH_SIZE, idx_len=i)
@@ -83,7 +84,7 @@ else:
         draft.load_model(draft_checkpoint_path, use_tp=draft_tp, rank_group=args.draft_ranks, group=draft_group)
         if args.compile:
             draft.compile()
-        draft.setup_caches(max_batch_size=BATCH_SIZE, max_seq_length=MAX_LEN, kv_len=256)
+        draft.setup_caches(max_batch_size=BATCH_SIZE, max_seq_length=MAX_LEN, kv_len=args.streamingllm_budget)
         draft_sample = {}
         for i in [1, 2]:
             draft_sample[i] = cuda_graph_for_sampling_argmax_batch(device=DEVICE, dtype=DTYPE, batch_size=BATCH_SIZE, idx_len=i)
