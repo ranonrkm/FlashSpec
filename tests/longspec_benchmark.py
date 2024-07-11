@@ -115,14 +115,14 @@ for step, batch in tqdm(enumerate(dataloader), total=num_eval_steps):
     num_nodes += input_ids.shape[1]
 
     logits = engine.encode(input_ids=input_ids)
+    tokens_buffer[:,:1] = sample(logits=logits[:,-1], top_p=args.top_p, T=args.temperature)
+    logits = None
     if not use_tp:
         draft.encode(input_ids=input_ids)
     else:
         if rank in args.draft_ranks:
             draft.encode(input_ids=input_ids)
         dist.barrier()
-    tokens_buffer[:,:1] = sample(logits=logits[:,-1], top_p=args.top_p, T=args.temperature)
-
     
     next_double = False
     double_buffer = None
