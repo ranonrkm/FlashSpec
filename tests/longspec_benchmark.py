@@ -173,6 +173,7 @@ for step, batch in tqdm(enumerate(dataloader), total=num_eval_steps):
         target_logits = engine.inference(tokens_buffer)
         # target_tokens = sample(target_logits, args.top_p, args.temperature)
         target_tokens = target_sample(target_logits)
+        target_logits = None
         target_steps+=1
 
         if benchmark:
