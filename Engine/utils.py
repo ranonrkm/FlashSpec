@@ -141,7 +141,7 @@ def load_model(checkpoint_path, device, precision, use_tp, rank_group=None, grou
     model.load_state_dict(checkpoint, assign=True)
 
     if use_tp:
-        from FastHesse.Engine.tp import apply_tp
+        from FlashSpec.Engine.tp import apply_tp
         print("Applying tensor parallel to model ...")
         apply_tp(model, rank_group, group=group)
 
@@ -159,7 +159,7 @@ def load_model_draft(checkpoint_path, device, precision, use_tp, rank_group=None
     model.load_state_dict(checkpoint, assign=True)
 
     if use_tp:
-        from FastHesse.Engine.tp import apply_tp
+        from FlashSpec.Engine.tp_draft import apply_tp
         print("Applying tensor parallel to model ...")
         apply_tp(model, rank_group, group=group)
 

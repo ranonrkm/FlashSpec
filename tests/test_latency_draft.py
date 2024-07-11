@@ -12,9 +12,10 @@ parser = argparse.ArgumentParser(description='Your CLI description.')
 parser.add_argument('--checkpoint_path', type=Path, default=Path("/home/jianc2/FastHesse/checkpoints/princeton-nlp/Sheared-LLaMA-1.3B/model.pth"), help='Model checkpoint path.')
 parser.add_argument('--compile', action='store_true', help='Whether to compile the model.')
 parser.add_argument('--B', type=int, default=1, help='batch size')
-parser.add_argument('--M', type=int, default=256, help='max len')
-parser.add_argument('--P', type=int, default=128, help='prefix len')
+parser.add_argument('--M', type=int, default=2048, help='max len')
+parser.add_argument('--P', type=int, default=1000, help='prefix len')
 parser.add_argument('--T', type=int, default=1000, help='repeat times')
+parser.add_argument('--kv_len', type=int, default=512, help='repeat times')
 parser.add_argument('--declen_list', nargs='+', type=int, help='Group of dec len')
 parser.add_argument('--rank_group', nargs='+', type=int, help='Group of ranks')
 args = parser.parse_args()
@@ -45,24 +46,20 @@ llm = LMBackend_Draft(dtype=precision, device=device, dec_list=dec_list)
 llm.load_model(checkpoint_path, use_tp=use_tp, rank_group=args.rank_group, group = global_group)
 if args.compile:
     llm.compile()
-llm.setup_caches(max_batch_size=max_batch_size, max_seq_length=max_seq_length)
+llm.setup_caches(max_batch_size=max_batch_size, max_seq_length=max_seq_length, kv_len=args.kv_len)
 
-cache_lens = torch.zeros(max_batch_size, dtype=torch.int32, device=device)
 prompt = torch.randint(low=3, high=30000, size=(max_batch_size, prefix_len), device=device)
-llm.encode(input_ids=prompt, cache_seqlens=cache_lens, division=False)
-cache_lens += prefix_len
+llm.encode(input_ids=prompt)
 
 for declen in dec_list:
     dec = torch.randint(low=3, high=30000, size=(max_batch_size, declen), device=device)
-
     with torch.inference_mode():
             for _ in range(warm_up):
-                logits = llm.inference(input_ids=dec, cache_seqlens=cache_lens)
+                logits = llm.inference(input_ids=dec, benchmark=True)
             torch.cuda.synchronize()
             t1 = time.perf_counter()
             for _ in range(T):
-                logits = llm.inference(input_ids=dec, cache_seqlens=cache_lens)
+                logits = llm.inference(input_ids=dec, benchmark=True)
             torch.cuda.synchronize()
             t2 = time.perf_counter()
-
-    print("Batch Size:{}, Max Length :{}, Decode Length :{}, Prefix Length :{}, inference time:{}s".format(max_batch_size, max_seq_length, declen, prefix_len, (t2 - t1)/ T))
+    print("Batch Size:{}, StreamingLLM Budget :{}, Decode Length :{}, Prefix Length :{}, inference time:{}s".format(max_batch_size, args.kv_len, declen, prefix_len, (t2 - t1)/ T))

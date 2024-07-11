@@ -6,6 +6,7 @@ import torch.nn as nn
 from torch import Tensor
 from torch.nn import functional as F
 from flash_attn import flash_attn_with_kvcache
+from torch.distributed import _functional_collectives as funcol
 
 torch.library.define(
     "mylib::custom_func_2",
@@ -105,6 +106,16 @@ class KVCache(nn.Module):
         v_select = v_out[self.batch_indices, select_indices]
 
         return torch.cat((k_out[:, :16], k_select), dim=1), torch.cat((v_out[:, :16], v_select), dim=1)
+    
+    def prefill(self, cache_len, k_val, v_val):
+        k_out = self.k_cache
+        v_out = self.v_cache
+        k_out[:, cache_len: cache_len+k_val.shape[1]] = k_val
+        v_out[:, cache_len: cache_len+v_val.shape[1]] = v_val
+        if cache_len+k_val.shape[1] < self.kv_len:
+            return k_out[:,:cache_len+k_val.shape[1]], v_out[:,:cache_len+k_val.shape[1]]
+        else:
+            return torch.cat((k_out[:, :16], k_out[:, cache_len+k_val.shape[1]-self.kv_len+16:cache_len+k_val.shape[1]]), dim=1), torch.cat((v_out[:, :16], v_out[:, cache_len+k_val.shape[1]-self.kv_len+16:cache_len+k_val.shape[1]]), dim=1)
 
 class Transformer(nn.Module):
     def __init__(self, config: ModelArgs) -> None:
@@ -150,6 +161,16 @@ class Transformer(nn.Module):
         x = self.norm(x)
         logits = self.output(x)
         return logits
+    
+    def prefill(self, idx: Tensor, input_pos: Optional[Tensor], cache_seqlens: Tensor) -> Tensor:
+        assert self.freqs_cis is not None, "Caches must be initialized first"
+        q_freqs_cis = self.freqs_cis[input_pos]
+        x = self.tok_embeddings(idx)
+        for i, layer in enumerate(self.layers):
+            x = layer.prefill(x, q_freqs_cis, self.k_freqs, cache_seqlens)
+        x = self.norm(x)
+        logits = self.output(x)
+        return logits
 
     @classmethod
     def from_name(cls, name: str):
@@ -168,6 +189,11 @@ class TransformerBlock(nn.Module):
         h = x + self.attention(self.attention_norm(x), q_freqs_cis, k_freqs, cache_seqlens)
         out = h + self.feed_forward(self.ffn_norm(h))
         return out
+    
+    def prefill(self, x: Tensor, q_freqs_cis: Tensor, k_freqs: Tensor, cache_seqlens: Tensor) -> Tensor:
+        h = x + self.attention.prefill(self.attention_norm(x), q_freqs_cis, k_freqs, cache_seqlens)
+        out = h + self.feed_forward(self.ffn_norm(h))
+        return out
 
 
 class Attention(nn.Module):
@@ -180,6 +206,7 @@ class Attention(nn.Module):
         self.wqkv = nn.Linear(config.dim, total_head_dim, bias=False)
         self.wo = nn.Linear(config.dim, config.dim, bias=False)
         self.kv_cache = None
+        self.process_group = None
 
         self.n_head = config.n_head
         self.head_dim = config.head_dim
@@ -207,7 +234,7 @@ class Attention(nn.Module):
 
         if self.kv_cache is not None:
             k, v = self.kv_cache.update(cache_seqlens, k, v)
-
+    
         q = apply_rotary_emb(q, q_freqs)
         k = apply_rotary_emb(k, k_freqs)
 
@@ -216,6 +243,34 @@ class Attention(nn.Module):
         y = y.contiguous().view(bsz, seqlen, self.dim)
 
         y = self.wo(y)
+        return y
+    
+    def prefill(self, x: Tensor, q_freqs: Tensor, k_freqs: Tensor, cache_seqlens: Tensor) -> Tensor:
+
+        bsz, seqlen, _ = x.shape
+
+        kv_size = self.n_local_heads * self.head_dim
+        q, k, v = self.wqkv(x).split([self.dim, kv_size, kv_size], dim=-1)
+
+        q = q.view(bsz, seqlen, self.n_head, self.head_dim)
+        k = k.view(bsz, seqlen, self.n_local_heads, self.head_dim)
+        v = v.view(bsz, seqlen, self.n_local_heads, self.head_dim)
+
+        if self.kv_cache is not None:
+            k, v = self.kv_cache.prefill(cache_seqlens, k, v)
+
+        k_freq = k_freqs[:, :k.shape[1]]
+
+        q = apply_rotary_emb(q, q_freqs)
+        k = apply_rotary_emb(k, k_freq)
+
+        y = torch.ops.mylib.custom_func_2(q, k, v)
+
+        y = y.contiguous().view(bsz, seqlen, self.dim)
+
+        y = self.wo(y)
+        if self.process_group != None:
+            return funcol.all_reduce(y, "sum", self.process_group)
         return y
 
 
