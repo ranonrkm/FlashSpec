@@ -124,8 +124,9 @@ for step, batch in tqdm(enumerate(dataloader), total=num_eval_steps):
             draft.encode(input_ids=input_ids)
         dist.barrier()
     
-    next_double = False
-    double_buffer = None
+    # next_double = False
+    first = True
+    double_buffer = torch.zeros((BATCH_SIZE, 2), device=DEVICE).long()
     cachelens_update = None
 
 
@@ -141,25 +142,27 @@ for step, batch in tqdm(enumerate(dataloader), total=num_eval_steps):
         if not use_tp:
             for i in range(args.gamma):
                 if i == 0:
-                    if next_double:
+                    if not first:
                         # The cachelens should increase 1 or 2
                         next_tokens = draft_sample[2](draft.inference(double_buffer, cachelen_update=cachelens_update))
                         tokens_buffer[:,i+1:i+2] = next_tokens.gather(1, cachelens_update.view(-1,1) - 1)
-                        next_double = False
+                        # next_double = False
                     else:
                         tokens_buffer[:,i+1:i+2] = draft_sample[1](draft.inference(tokens_buffer[:, i].view(-1,1)))
+                        first = False
                     continue
                 tokens_buffer[:,i+1:i+2] = draft_sample[1](draft.inference(tokens_buffer[:, i].view(-1,1)))
         else:
             if rank in args.draft_ranks:
                 for i in range(args.gamma):
                     if i == 0:
-                        if next_double:
+                        if not first:
                             next_tokens = draft_sample[2](draft.inference(double_buffer,cachelen_update=cachelens_update))
                             tokens_buffer[:,i+1:i+2] = next_tokens.gather(1, cachelens_update.view(-1,1) - 1)
-                            next_double = False
+                            # next_double = False
                         else:
                             tokens_buffer[:,i+1:i+2] = draft_sample[1](draft.inference(tokens_buffer[:, i].view(-1,1)))
+                            first = False
                         continue
                     tokens_buffer[:,i+1:i+2] = draft_sample[1](draft.inference(tokens_buffer[:, i].view(-1,1)))
             dist.broadcast(tokens_buffer, src=args.draft_ranks[0], group=global_group)
@@ -234,14 +237,14 @@ for step, batch in tqdm(enumerate(dataloader), total=num_eval_steps):
         # Put Bonus tokens to the tokens buffer, and prepare the variables for next itr
         if not terminal:
             tokens_buffer[:, :1] = bonus_tokens
-            if accept_nums.max() == args.gamma + 1:
-                next_double = True
-                double_buffer = torch.zeros((BATCH_SIZE, 2), device=DEVICE).long()
-                mask = (accept_nums == (args.gamma + 1)).squeeze()
-                double_buffer[:, 0] = torch.where(mask, tokens_buffer[:, -1], bonus_tokens[:, 0])
-                double_buffer[:, 1] = torch.where(mask, bonus_tokens[:, 0], torch.zeros_like(bonus_tokens[:, 0]))
-                non_zero_mask = double_buffer != 0
-                cachelens_update = non_zero_mask.sum(dim=1).flatten()
+            # if accept_nums.max() == args.gamma + 1:
+                # next_double = True
+                # double_buffer = torch.zeros((BATCH_SIZE, 2), device=DEVICE).long()
+            mask = (accept_nums == (args.gamma + 1)).squeeze()
+            double_buffer[:, 0] = torch.where(mask, tokens_buffer[:, -1], bonus_tokens[:, 0])
+            double_buffer[:, 1] = torch.where(mask, bonus_tokens[:, 0], torch.zeros_like(bonus_tokens[:, 0]))
+            non_zero_mask = double_buffer != 0
+            cachelens_update = non_zero_mask.sum(dim=1).flatten()
         
         if not terminal:
             if benchmark:
