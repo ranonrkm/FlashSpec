@@ -29,7 +29,7 @@ parser.add_argument('--printoutput', action='store_true', help='Whether to compi
 args = parser.parse_args()
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 global print
-from FastHesse.Engine.tp import init_dist
+from FlashSpec.Engine.tp import init_dist
 use_tp = len(args.rank_group) > 1
 global_group = None
 if use_tp:
