@@ -271,8 +271,8 @@ class Attention(nn.Module):
 
         y = self.wo(y)
         if self.process_group != None:
-            # return funcol.all_reduce(y, "sum", self.process_group)
-            dist.all_reduce(y, group = self.process_group)
+            return funcol.all_reduce(y, "sum", self.process_group)
+            # dist.all_reduce(y, group = self.process_group)
         return y
 
 
