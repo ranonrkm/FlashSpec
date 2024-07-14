@@ -89,35 +89,28 @@ class KVCache(nn.Module):
     def __init__(self, max_batch_size, max_seq_length, n_heads, head_dim, dtype=torch.bfloat16, kv_len=512):
         super().__init__()
         cache_shape = (max_batch_size, max_seq_length, n_heads, head_dim)
-        stream_cache_shape = (max_batch_size, kv_len, n_heads, head_dim)
         self.register_buffer('k_cache', torch.zeros(cache_shape, dtype=dtype))
         self.register_buffer('v_cache', torch.zeros(cache_shape, dtype=dtype))
         self.register_buffer('batch_indices',torch.arange(max_batch_size).unsqueeze(1))
-        self.register_buffer('streaming_cache_k',torch.zeros(stream_cache_shape, dtype=dtype))
-        self.register_buffer('streaming_cache_v',torch.zeros(stream_cache_shape, dtype=dtype))
         self.kv_len = kv_len
-    
+
     def update(self, cache_seqs, k_val, v_val):
-        # input_pos: [B], k_val: [B, S, H, D]
+        # cache_seqs: [B], k_val: [B, S, H, D]
         k_out = self.k_cache
         v_out = self.v_cache
         cache_indices = cache_seqs.unsqueeze(1) + torch.arange(k_val.size(1), device=k_val.device)
         k_out[self.batch_indices, cache_indices] = k_val
         v_out[self.batch_indices, cache_indices] = v_val
-        select_indices = cache_seqs.unsqueeze(1)+ k_val.size(1) + torch.arange(16-self.kv_len,0, device=k_val.device)
-        self.streaming_cache_k[:, 16:] = k_out[self.batch_indices, select_indices]
-        self.streaming_cache_v[:, 16:] = v_out[self.batch_indices, select_indices]
-        return self.streaming_cache_k, self.streaming_cache_v
-
+        select_indices = cache_seqs.unsqueeze(1)+ k_val.size(1) + torch.arange(16-self.kv_len, 0, device=k_val.device)
+        selected_k = k_out[self.batch_indices, select_indices]
+        selected_v = v_out[self.batch_indices, select_indices]
+        return torch.cat((k_out[:, :16], selected_k), dim = 1), torch.cat((v_out[:, :16], selected_v), dim = 1)
     
     def prefill(self, cache_len, k_val, v_val):
         k_out = self.k_cache
         v_out = self.v_cache
         k_out[:, cache_len: cache_len+k_val.shape[1]] = k_val
         v_out[:, cache_len: cache_len+v_val.shape[1]] = v_val
-        if cache_len > 16:
-            self.streaming_cache_k[:,:16] = k_out[:, :16]
-            self.streaming_cache_v[:,:16] = v_out[:, :16]
         if cache_len+k_val.shape[1] < self.kv_len:
             return k_out[:,:cache_len+k_val.shape[1]], v_out[:,:cache_len+k_val.shape[1]]
         else:
