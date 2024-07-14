@@ -48,6 +48,8 @@ def convert_pg19_dataset(tokenizer, seq_len = 4096):
              tokenized_prompt[i][:, 0] = 1
              tokenized_prompts.append(tokenized_prompt[i])
     data = torch.cat(tokenized_prompts, dim=0)
+    # repeat the data to make more batches
+    data = data.repeat(20, 1)
     return TensorDataset(data)
 
 # if __name__ == "__main__":

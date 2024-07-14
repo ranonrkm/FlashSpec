@@ -1,5 +1,6 @@
 import time
 import torch
+import os
 import sys
 sys.path.append("..")
 from pathlib import Path
@@ -18,6 +19,7 @@ parser.add_argument('--model', type=Path, default=Path("checkpoints/meta-llama/L
 parser.add_argument('--target', type=Path, default=Path("checkpoints/meta-llama/Llama-2-70b-hf/model.pth"), help='target model')
 parser.add_argument('--gamma', type=int, default=5, help='start')
 parser.add_argument('--B', type=int, default=1, help='Batch size.')
+parser.add_argument('--P', type=int, default=4000, help='Prefix length.')                          
 parser.add_argument('--M', type=int, default=256, help='Maximum length.')
 parser.add_argument('--seed', type=int, default=123, help='Random seed.')
 parser.add_argument('--dataset', type=str, default="cnn", help='dataset path')
@@ -33,7 +35,16 @@ parser.add_argument('--benchmark', action='store_true', help='Whether to compile
 parser.add_argument('--streamingllm_budget', type=int, default=256, help='Dataset end index.')
 
 args = parser.parse_args()
-assert args.M + args.gamma + 1 <= 4096
+
+if "32k" in os.path.dirname(args.target).lower():
+    max_position_embeddings = 32768
+elif "16k" in os.path.dirname(args.target).lower():
+    max_position_embeddings = 16384
+elif "8k" in os.path.dirname(args.target).lower():
+    max_position_embeddings = 8192
+else:
+    max_position_embeddings = 4096
+assert args.M + args.gamma + 1 <= max_position_embeddings, f"Model max_position_embeddings is {max_position_embeddings}, but M+gamma+1 is {args.M + args.gamma + 1}"
 
 draft_tp = len(args.draft_ranks) > 1
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -58,7 +69,8 @@ BATCH_SIZE = args.B
 benchmark = args.benchmark
 checkpoint_path = args.target
 draft_checkpoint_path = args.model
-
+prefill = args.P
+end_step = args.end
 target_dec_list = [args.gamma + 1]
 
 engine = LMBackend(dtype=DTYPE, device=DEVICE, dec_list=target_dec_list)
@@ -91,9 +103,10 @@ else:
 
 tokenizer = LlamaTokenizer.from_pretrained("meta-llama/Llama-2-7b-hf")
 tokenizer.pad_token = tokenizer.eos_token
-dataset = convert_pg19_dataset(tokenizer=tokenizer, seq_len=4096)
+dataset = convert_pg19_dataset(tokenizer=tokenizer, seq_len=prefill)
 dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=True)
-num_eval_steps = len(dataloader)
+num_eval_steps = min(len(dataloader), end_step)
+print(f"Total number of steps: {num_eval_steps}")
 
 total_time = 0.0
 num_gen_tokens = 0
@@ -103,9 +116,11 @@ if benchmark:
     target_time = 0.0
     verify_loop = 0.0
 
-
-for step, batch in tqdm(enumerate(dataloader), total=num_eval_steps):
-    input_ids = batch[0][:,:4000].to(DEVICE)
+pbar = tqdm(enumerate(dataloader), total=num_eval_steps)
+for step, batch in pbar:
+    if step >= end_step:  
+        break
+    input_ids = batch[0][:,:prefill].to(DEVICE)
     terminal = False
     tokens_buffer= torch.zeros((BATCH_SIZE, args.gamma+1), device=DEVICE).long()
     output = torch.zeros(BATCH_SIZE, MAX_LEN, device=DEVICE).long()
@@ -196,7 +211,7 @@ for step, batch in tqdm(enumerate(dataloader), total=num_eval_steps):
             if condition.any():
                 terminal = True
             accept_flags = accept_flags & ~condition
-        
+
         # Rollback the memory length
         engine.cachelens = engine.cachelens - args.gamma - 1
 
@@ -275,3 +290,9 @@ for step, batch in tqdm(enumerate(dataloader), total=num_eval_steps):
             verify_loop = 0.0
     if use_tp:
         dist.barrier()
+    
+    if target_steps > 0:
+        pbar.set_description("acceptance rate: {:.3f}".format(num_gen_tokens/target_steps/BATCH_SIZE - 1))
+
+print("total time :{:.5f}s, time per iter :{:.5f}s, decoding step: {}, large model step: {}".format(total_time, total_time / target_steps, num_gen_tokens, target_steps))
+print("throughput: {:.3f}".format(num_gen_tokens/total_time))
