@@ -6,7 +6,7 @@ import torch.nn as nn
 from torch import Tensor
 from torch.nn import functional as F
 from flash_attn import flash_attn_with_kvcache
-from torch.distributed import _functional_collectives as funcol
+import torch.distributed as dist
 
 torch.library.define(
     "mylib::custom_func_2",
@@ -249,6 +249,8 @@ class Attention(nn.Module):
         y = y.contiguous().view(bsz, seqlen, self.dim)
 
         y = self.wo(y)
+        if self.process_group != None:
+            dist.all_reduce(y, group=self.process_group)
         return y
     
     def prefill(self, x: Tensor, q_freqs: Tensor, k_freqs: Tensor, cache_seqlens: Tensor) -> Tensor:
@@ -276,7 +278,7 @@ class Attention(nn.Module):
 
         y = self.wo(y)
         if self.process_group != None:
-            return funcol.all_reduce(y, "sum", self.process_group)
+            dist.all_reduce(y, group=self.process_group)
         return y
 
 
@@ -286,9 +288,13 @@ class FeedForward(nn.Module):
         self.w1 = nn.Linear(config.dim, config.intermediate_size, bias=False)
         self.w3 = nn.Linear(config.dim, config.intermediate_size, bias=False)
         self.w2 = nn.Linear(config.intermediate_size, config.dim, bias=False)
+        self.process_group = None
 
     def forward(self, x: Tensor) -> Tensor:
-        return self.w2(F.silu(self.w1(x)) * self.w3(x))
+        y = self.w2(F.silu(self.w1(x)) * self.w3(x))
+        if self.process_group != None:
+            dist.all_reduce(y, group=self.process_group)
+        return y
 
 
 class RMSNorm(nn.Module):

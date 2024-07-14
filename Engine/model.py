@@ -6,6 +6,7 @@ import torch.nn as nn
 from torch import Tensor
 from torch.nn import functional as F
 from flash_attn import flash_attn_with_kvcache
+import torch.distributed as dist
 
 torch.library.define(
     "mylib::custom_func",
@@ -163,6 +164,7 @@ class Attention(nn.Module):
         self.wqkv = nn.Linear(config.dim, total_head_dim, bias=False)
         self.wo = nn.Linear(config.dim, config.dim, bias=False)
         self.kv_cache = None
+        self.process_group = None
 
         self.n_head = config.n_head
         self.head_dim = config.head_dim
@@ -198,6 +200,8 @@ class Attention(nn.Module):
         y = y.contiguous().view(bsz, seqlen, self.dim)
 
         y = self.wo(y)
+        if self.process_group != None:
+            dist.all_reduce(y, group=self.process_group)
         return y
 
 
@@ -207,9 +211,13 @@ class FeedForward(nn.Module):
         self.w1 = nn.Linear(config.dim, config.intermediate_size, bias=False)
         self.w3 = nn.Linear(config.dim, config.intermediate_size, bias=False)
         self.w2 = nn.Linear(config.intermediate_size, config.dim, bias=False)
+        self.process_group = None
 
     def forward(self, x: Tensor) -> Tensor:
-        return self.w2(F.silu(self.w1(x)) * self.w3(x))
+        y = self.w2(F.silu(self.w1(x)) * self.w3(x))
+        if self.process_group != None:
+            dist.all_reduce(y, group=self.process_group)
+        return y
 
 
 class RMSNorm(nn.Module):
