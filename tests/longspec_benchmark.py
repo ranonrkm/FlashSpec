@@ -36,15 +36,15 @@ parser.add_argument('--streamingllm_budget', type=int, default=256, help='Datase
 
 args = parser.parse_args()
 
-if "32k" in os.path.dirname(args.target).lower():
-    max_position_embeddings = 32768
-elif "16k" in os.path.dirname(args.target).lower():
-    max_position_embeddings = 16384
-elif "8k" in os.path.dirname(args.target).lower():
-    max_position_embeddings = 8192
-else:
-    max_position_embeddings = 4096
-assert args.M + args.gamma + 1 <= max_position_embeddings, f"Model max_position_embeddings is {max_position_embeddings}, but M+gamma+1 is {args.M + args.gamma + 1}"
+# if "32k" in os.path.dirname(args.target).lower():
+#     max_position_embeddings = 32768
+# elif "16k" in os.path.dirname(args.target).lower():
+#     max_position_embeddings = 16384
+# elif "8k" in os.path.dirname(args.target).lower():
+#     max_position_embeddings = 8192
+# else:
+#     max_position_embeddings = 4096
+# assert args.M + args.gamma + 1 <= max_position_embeddings, f"Model max_position_embeddings is {max_position_embeddings}, but M+gamma+1 is {args.M + args.gamma + 1}"
 
 draft_tp = len(args.draft_ranks) > 1
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -103,6 +103,7 @@ else:
 
 tokenizer = LlamaTokenizer.from_pretrained("meta-llama/Llama-2-7b-hf")
 tokenizer.pad_token = tokenizer.eos_token
+vocab_size = engine.model.config.vocab_size
 dataset = convert_pg19_dataset(tokenizer=tokenizer, seq_len=prefill)
 dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=True)
 num_eval_steps = min(len(dataloader), end_step)
@@ -135,7 +136,7 @@ for step, batch in pbar:
         if rank in args.draft_ranks:
             draft.encode(input_ids=input_ids)
         dist.barrier()
-    tokens_buffer[:,:1] = sample(logits=logits, top_p=args.top_p, T=args.temperature)
+    tokens_buffer[:,:1] = sample(logits=logits, top_p=args.top_p, T=args.temperature, vocab_size=vocab_size)
 
     
     next_double = False
