@@ -44,6 +44,7 @@ def convert_pg19_dataset(tokenizer, seq_len = 4096):
     for i in tqdm(range(0,20)):
         prompt = dataset[i]['text']
         tokenized_prompt = tokenizer.encode(prompt, return_tensors="pt").split(seq_len, dim=-1)[2:-1]
+        # tokenized_prompt = tokenizer.encode(prompt, return_tensors="pt")[8192:].split(seq_len, dim=-1)[:-1]
         for i in range(len(tokenized_prompt)):
              tokenized_prompt[i][:, 0] = 1
              tokenized_prompts.append(tokenized_prompt[i])
@@ -51,6 +52,26 @@ def convert_pg19_dataset(tokenizer, seq_len = 4096):
     # repeat the data to make more batches
     data = data.repeat(20, 1)
     return TensorDataset(data)
+
+def convert_longbench_dataset(tokenizer, seq_len = 4096):
+    dataset = load_dataset("THUDM/LongBench", task, split='test')
+    prompt = json.load(open(f"data/json/longbench_prompt.json", "r"))
+    prompt_format = prompt[task]
+
+    tokenized_prompts = []
+    for i in tqdm(range(len(dataset))):
+        json_obj = dataset[i]
+        prompt = prompt_format.format(**json_obj)
+        # following https://github.com/THUDM/LongBench/blob/main/pred.py
+        tokenized_raw_prompt = tokenizer.encode(prompt, truncation=False)
+        if len(tokenized_raw_prompt) > seq_len:
+            half = seq_len // 2
+            prompt = tokenizer.decode(tokenized_prompt[:half], skip_special_tokens=True)+tokenizer.decode(tokenized_prompt[-half:], skip_special_tokens=True)
+        prompt = f"<|User|>:{prompt}<eoh>\n<|Bot|>:"
+        tokenized_prompt = tokenizer.encode(prompt, truncation=False, return_tensors="pt")
+        if tokenized_prompt.shape[-1] < 16*1000:
+            tokenized_prompts.append(tokenized_prompt)
+    return 
 
 # if __name__ == "__main__":
 #     from transformers import LlamaTokenizer, DataCollatorForLanguageModeling

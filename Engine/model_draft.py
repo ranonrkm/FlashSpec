@@ -8,6 +8,9 @@ from torch.nn import functional as F
 from flash_attn import flash_attn_with_kvcache
 from torch.distributed import _functional_collectives as funcol
 
+from FlashSpec.Engine.model import KVCache as SimpleKVCache
+from FlashSpec.Engine.model import TransformerBlock as SimpleTransformerBlock
+
 torch.library.define(
     "mylib::custom_func_2",
     "(Tensor q, Tensor(a!) k_cache, Tensor(a!) v_cache) -> Tensor",
@@ -83,6 +86,7 @@ transformer_configs = {
     "llama-160m": dict(block_size=2048, n_layer=12, n_head=12, n_local_heads=12, dim=768, intermediate_size=3072, vocab_size=32000),
     "1.3b": dict(block_size =2048, n_layer=24, n_head=16, n_local_heads=16, dim=2048, intermediate_size=5504, vocab_size=32000),
     "tinyllama": dict(block_size =2048, n_layer=22, n_head=32, n_local_heads=4, dim=2048, intermediate_size=5632, vocab_size=32000),
+    "tiny-vicuna-1b": dict(block_size =2048, n_layer=22, n_head=32, n_local_heads=4, dim=2048, intermediate_size=5632, vocab_size=32000), # same as tinyllama
 }
 
 class KVCache(nn.Module):
@@ -129,7 +133,9 @@ class Transformer(nn.Module):
         self.config = config
 
         self.tok_embeddings = nn.Embedding(config.vocab_size, config.dim)
-        self.layers = nn.ModuleList(TransformerBlock(config) for _ in range(config.n_layer))
+        self.layers = nn.ModuleList([SimpleTransformerBlock(config) for _ in range(2)] + \
+                                    [TransformerBlock(config) for _ in range(config.n_layer - 2)])
+        # self.layers = nn.ModuleList([TransformerBlock(config) for _ in range(config.n_layer)])
         self.norm = RMSNorm(config.dim, eps=config.norm_eps)
         self.output = nn.Linear(config.dim, config.vocab_size, bias=False)
 
@@ -151,29 +157,40 @@ class Transformer(nn.Module):
             dtype = self.output.scales.dtype
         elif hasattr(self.output, "scales_and_zeros"):
             dtype = self.output.scales_and_zeros.dtype
-        for b in self.layers:
-            b.attention.kv_cache = KVCache(max_batch_size, max_seq_length, self.config.n_local_heads, head_dim, dtype, kv_len)
+        for i, b in enumerate(self.layers):
+            if i < 2:
+                b.attention.kv_cache = SimpleKVCache(max_batch_size, max_seq_length, self.config.n_local_heads, head_dim, dtype)
+            else:
+                b.attention.kv_cache = KVCache(max_batch_size, max_seq_length, self.config.n_local_heads, head_dim, dtype, kv_len)
 
         self.freqs_cis = precompute_freqs_cis(self.config.block_size, self.config.dim // self.config.n_head, self.config.rope_base, dtype)
         self.k_freqs = self.freqs_cis[torch.arange(kv_len).unsqueeze(0).repeat(max_batch_size,1)]
 
-    def forward(self, idx: Tensor, input_pos: Optional[Tensor], cache_seqlens: Tensor) -> Tensor:
+    def forward(self, idx: Tensor, input_pos: Optional[Tensor], orig_input_pos: Optional[Tensor], cache_seqlens: Tensor) -> Tensor:
         assert self.freqs_cis is not None, "Caches must be initialized first"
 
         q_freqs_cis = self.freqs_cis[input_pos]
+        freqs_cis = self.freqs_cis[orig_input_pos]
         x = self.tok_embeddings(idx)
         for i, layer in enumerate(self.layers):
-            x = layer(x, q_freqs_cis, self.k_freqs, cache_seqlens)
+            if i < 2:
+                x = layer(x, freqs_cis, cache_seqlens)
+            else:
+                x = layer(x, q_freqs_cis, self.k_freqs, cache_seqlens)
         x = self.norm(x)
         logits = self.output(x)
         return logits
     
-    def prefill(self, idx: Tensor, input_pos: Optional[Tensor], cache_seqlens: Tensor) -> Tensor:
+    def prefill(self, idx: Tensor, input_pos: Optional[Tensor], orig_input_pos: Optional[Tensor], cache_seqlens: Tensor) -> Tensor:
         assert self.freqs_cis is not None, "Caches must be initialized first"
         q_freqs_cis = self.freqs_cis[input_pos]
+        freqs_cis = self.freqs_cis[orig_input_pos]
         x = self.tok_embeddings(idx)
         for i, layer in enumerate(self.layers):
-            x = layer.prefill(x, q_freqs_cis, self.k_freqs, cache_seqlens)
+            if i < 2:
+                x = layer(x, freqs_cis, torch.full((x.size(0),), cache_seqlens, device=x.device, dtype=torch.int32))
+            else:
+                x = layer.prefill(x, q_freqs_cis, self.k_freqs, cache_seqlens)
         x = self.norm(x)
         logits = self.output(x)
         return logits
