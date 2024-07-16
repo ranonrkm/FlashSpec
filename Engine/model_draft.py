@@ -319,7 +319,7 @@ def precompute_freqs_cis(
     scaling_factor = 1
 ) -> Tensor:
     freqs = 1.0 / (base ** (torch.arange(0, n_elem, 2)[: (n_elem // 2)].float() / n_elem))
-    t = torch.arange(seq_len, device=freqs.device)
+    t = torch.arange(seq_len, device=freqs.device, dtype=freqs.dtype)
     t /=scaling_factor
     freqs = torch.outer(t, freqs)
     freqs_cis = torch.polar(torch.ones_like(freqs), freqs)
