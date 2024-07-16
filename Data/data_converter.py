@@ -68,7 +68,6 @@ class LongBenchDataset(IterableDataset):
                 sample = next(self.data_iter)
             except StopIteration:
                 print("Restarting data iterator")
-                self.dataset = load_dataset("THUDM/LongBench", self.task, split='test', streaming=True)
                 self.data_iter = iter(self.dataset)
                 sample = next(self.data_iter)
             prompt = self.prompt_format.format(**sample)
