@@ -6,7 +6,7 @@ sys.path.append("..")
 from pathlib import Path
 import torch.distributed as dist
 from FlashSpec.Engine.utils import setup_seed, sample, cuda_graph_for_sampling_argmax_batch
-from FlashSpec.Data.data_converter import convert_pg19_dataset
+from FlashSpec.Data.data_converter import convert_pg19_dataset, LongBenchDataset
 from transformers import LlamaTokenizer
 from torch.utils.data.dataloader import DataLoader
 from tqdm import tqdm
@@ -104,9 +104,19 @@ else:
 
 tokenizer = LlamaTokenizer.from_pretrained("meta-llama/Llama-2-7b-hf")
 tokenizer.pad_token = tokenizer.eos_token
-dataset = convert_pg19_dataset(tokenizer=tokenizer, seq_len=prefill)
+if args.dataset == "pg19":
+    dataset = convert_pg19_dataset(tokenizer=tokenizer, seq_len=prefill)
+elif args.dataset.startswith("longbench"):
+    task = args.dataset.split(":")[1]
+    dataset = LongBenchDataset(tokenizer=tokenizer, task=task, seq_len=prefill)
+else:
+    raise ValueError("Unknown dataset")
+
 dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=True)
-num_eval_steps = min(len(dataloader), end_step)
+try:
+    num_eval_steps = min(len(dataloader), end_step)
+except:
+    num_eval_steps = end_step
 print(f"Total number of steps: {num_eval_steps}")
 
 total_time = 0.0
@@ -121,7 +131,10 @@ pbar = tqdm(enumerate(dataloader), total=num_eval_steps)
 for step, batch in pbar:
     if step >= end_step:  
         break
-    input_ids = batch[0][:,:prefill].to(DEVICE)
+    if isinstance(batch, list):
+        input_ids = batch[0][:,:prefill].to(DEVICE)
+    else:
+        input_ids = batch[:, :prefill].to(DEVICE)
     terminal = False
     tokens_buffer= torch.zeros((BATCH_SIZE, args.gamma+1), device=DEVICE).long()
     output = torch.zeros(BATCH_SIZE, MAX_LEN, device=DEVICE).long()

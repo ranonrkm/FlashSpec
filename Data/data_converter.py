@@ -1,7 +1,8 @@
 import torch
 from datasets import load_dataset
 import os
-from torch.utils.data import TensorDataset
+import json
+from torch.utils.data import TensorDataset, IterableDataset
 from tqdm import tqdm
 
 def convert_c4_dataset(tokenizer, file_path):
@@ -51,6 +52,26 @@ def convert_pg19_dataset(tokenizer, seq_len = 4096):
     # repeat the data to make more batches
     data = data.repeat(20, 1)
     return TensorDataset(data)
+
+class LongBenchDataset(IterableDataset):
+    def __init__(self, tokenizer, task, seq_len = 4096):
+        self.tokenizer = tokenizer
+        self.seq_len = seq_len
+        self.dataset = load_dataset("THUDM/LongBench", task, split='test', streaming=True)
+        prompt = json.load(open(f"Data/json/longbench_prompt.json", "r"))
+        self.prompt_format = prompt[task]
+
+    def __iter__(self):
+        for sample in self.dataset:
+            prompt = self.prompt_format.format(**sample)
+            prompt = f"<|User|>:{prompt}<eoh>\n<|Bot|>:"
+            tokenized_prompt = self.tokenizer.encode(prompt, truncation=False)
+            if len(tokenized_prompt) >= self.seq_len:
+                if len(tokenized_prompt) > self.seq_len:
+                    half = self.seq_len // 2
+                    prompt = self.tokenizer.decode(tokenized_prompt[:half], skip_special_tokens=True)+self.tokenizer.decode(tokenized_prompt[-self.seq_len+half:], skip_special_tokens=True)
+                tokenized_prompt = self.tokenizer.encode(prompt, return_tensors="pt", truncation=True, max_length=self.seq_len).squeeze(0)
+                yield tokenized_prompt                
 
 # if __name__ == "__main__":
 #     from transformers import LlamaTokenizer, DataCollatorForLanguageModeling
