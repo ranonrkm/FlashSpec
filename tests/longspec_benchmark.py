@@ -7,7 +7,7 @@ from pathlib import Path
 import torch.distributed as dist
 from FlashSpec.Engine.utils import setup_seed, sample, cuda_graph_for_sampling_argmax_batch
 from FlashSpec.Data.data_converter import convert_pg19_dataset, LongBenchDataset
-from transformers import LlamaTokenizer
+from transformers import LlamaTokenizer, AutoTokenizer
 from torch.utils.data.dataloader import DataLoader
 from tqdm import tqdm
 import argparse
@@ -36,15 +36,10 @@ parser.add_argument('--streamingllm_budget', type=int, default=256, help='Datase
 
 args = parser.parse_args()
 
-# if "32k" in os.path.dirname(args.target).lower():
-#     max_position_embeddings = 32768
-# elif "16k" in os.path.dirname(args.target).lower():
-#     max_position_embeddings = 16384
-# elif "8k" in os.path.dirname(args.target).lower():
-#     max_position_embeddings = 8192
-# else:
-#     max_position_embeddings = 4096
-# assert args.M + args.gamma + 1 <= max_position_embeddings, f"Model max_position_embeddings is {max_position_embeddings}, but M+gamma+1 is {args.M + args.gamma + 1}"
+# extract the model name from args.target - meta-llama/Llama-2-7b-hf
+model_name = os.path.basename(os.path.dirname(args.target))
+src = os.path.basename(os.path.dirname(os.path.dirname(args.target)))
+model_name = f"{src}/{model_name}"
 
 draft_tp = len(args.draft_ranks) > 1
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -61,6 +56,8 @@ if use_tp:
     if rank != args.rank_group[0]:
         print = lambda *args, **kwargs: None
 
+print(f"Model name: {model_name}")
+
 setup_seed(args.seed)
 print(f"Using device={DEVICE}")
 MAX_LEN = args.M + args.gamma +1
@@ -75,6 +72,9 @@ target_dec_list = [args.gamma + 1]
 
 engine = LMBackend(dtype=DTYPE, device=DEVICE, dec_list=target_dec_list)
 engine.load_model(checkpoint_path, use_tp=use_tp, rank_group = args.rank_group, group=global_group)
+
+assert args.M + args.gamma + 1 <= engine.model.config.block_size, f"Model block_size is {engine.model.config.block_size}, but M+gamma+1 is {args.M + args.gamma + 1}"
+
 vocab_size = engine.model.config.vocab_size
 if args.compile:
     engine.compile()
@@ -102,7 +102,7 @@ else:
             draft_sample[i] = cuda_graph_for_sampling_argmax_batch(device=DEVICE, dtype=DTYPE, dim=vocab_size, batch_size=BATCH_SIZE, idx_len=i)
     dist.barrier()
 
-tokenizer = LlamaTokenizer.from_pretrained("meta-llama/Llama-2-7b-hf")
+tokenizer = AutoTokenizer.from_pretrained(model_name)
 tokenizer.pad_token = tokenizer.eos_token
 if args.dataset == "pg19":
     dataset = convert_pg19_dataset(tokenizer=tokenizer, seq_len=prefill)
@@ -291,7 +291,10 @@ for step, batch in pbar:
     num_gen_tokens += (num_nodes.sum() - input_ids.shape[1]*BATCH_SIZE)
     if args.printoutput:
         for i in range(BATCH_SIZE):
-            print(tokenizer.decode(output[i, :num_nodes[i]]))
+            # print(tokenizer.decode(output[i, :num_nodes[i]]))
+            print("\033[92m" + tokenizer.decode(input_ids[i, -64:]) + "\033[0m")
+            print("\033[91m" + tokenizer.decode(output[i, prefill:num_nodes[i]]) + "\033[0m")
+            print("\n")
     print("total time :{:.5f}s, time per iter :{:.5f}s, decoding step: {}, large model step: {}".format(total_time, total_time / target_steps, num_gen_tokens, target_steps))
     if benchmark:
         print("target time :{:.5f}s, draft time :{:.5f}s, verify loop : {}, avg generate len per sentence: {}".format(target_time/target_steps, draft_time / target_steps, verify_loop/target_steps, num_gen_tokens/target_steps/BATCH_SIZE))
