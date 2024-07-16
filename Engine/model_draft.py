@@ -41,6 +41,7 @@ class ModelArgs:
     head_dim: int = 64
     rope_base: float = 10000
     norm_eps: float = 1e-5
+    scaling_factor:float = 1.0
 
     def __post_init__(self):
         if self.n_local_heads == -1:
@@ -83,6 +84,13 @@ transformer_configs = {
     "llama-160m": dict(block_size=2048, n_layer=12, n_head=12, n_local_heads=12, dim=768, intermediate_size=3072, vocab_size=32000),
     "1.3b": dict(block_size =2048, n_layer=24, n_head=16, n_local_heads=16, dim=2048, intermediate_size=5504, vocab_size=32000),
     "tinyllama": dict(block_size =2048, n_layer=22, n_head=32, n_local_heads=4, dim=2048, intermediate_size=5632, vocab_size=32000),
+
+    # new models
+    # lmsys/vicuna-7b-v1.5-16k
+    "vicuna-7b-v1.5-16k": dict(block_size=16384, vocab_size=32000, n_layer=32, dim = 4096, scaling_factor=4.),
+    'tiny-vicuna-1b': dict(block_size =2048, n_layer=22, n_head=32, n_local_heads=4, dim=2048, intermediate_size=5632, vocab_size=32000), # same as tinyllama
+    # togethercomputer/LLaMA-2-7B-32K
+    'llama-2-7B-32K': dict(block_size=32768, n_layer=32, dim = 4096, vocab_size=32000,scaling_factor=8.),
 }
 
 class KVCache(nn.Module):
@@ -154,7 +162,7 @@ class Transformer(nn.Module):
         for b in self.layers:
             b.attention.kv_cache = KVCache(max_batch_size, max_seq_length, self.config.n_local_heads, head_dim, dtype, kv_len)
 
-        self.freqs_cis = precompute_freqs_cis(self.config.block_size, self.config.dim // self.config.n_head, self.config.rope_base, dtype)
+        self.freqs_cis = precompute_freqs_cis(self.config.block_size, self.config.dim // self.config.n_head, self.config.rope_base, dtype, self.config.scaling_factor)
         self.k_freqs = self.freqs_cis[torch.arange(kv_len).unsqueeze(0).repeat(max_batch_size,1)]
 
     def forward(self, idx: Tensor, input_pos: Optional[Tensor], cache_seqlens: Tensor) -> Tensor:
@@ -307,10 +315,12 @@ class RMSNorm(nn.Module):
 
 def precompute_freqs_cis(
     seq_len: int, n_elem: int, base: int = 10000,
-    dtype: torch.dtype = torch.bfloat16
+    dtype: torch.dtype = torch.bfloat16,
+    scaling_factor = 1
 ) -> Tensor:
     freqs = 1.0 / (base ** (torch.arange(0, n_elem, 2)[: (n_elem // 2)].float() / n_elem))
     t = torch.arange(seq_len, device=freqs.device)
+    t /=scaling_factor
     freqs = torch.outer(t, freqs)
     freqs_cis = torch.polar(torch.ones_like(freqs), freqs)
     cache = torch.stack([freqs_cis.real, freqs_cis.imag], dim=-1)
