@@ -58,11 +58,19 @@ class LongBenchDataset(IterableDataset):
         self.tokenizer = tokenizer
         self.seq_len = seq_len
         self.dataset = load_dataset("THUDM/LongBench", task, split='test', streaming=True)
+        self.data_iter = iter(self.dataset)
         prompt = json.load(open(f"Data/json/longbench_prompt.json", "r"))
         self.prompt_format = prompt[task]
 
     def __iter__(self):
-        for sample in self.dataset:
+        while True:
+            try:
+                sample = next(self.data_iter)
+            except StopIteration:
+                print("Restarting data iterator")
+                self.dataset = load_dataset("THUDM/LongBench", self.task, split='test', streaming=True)
+                self.data_iter = iter(self.dataset)
+                sample = next(self.data_iter)
             prompt = self.prompt_format.format(**sample)
             prompt = f"<|User|>:{prompt}<eoh>\n<|Bot|>:"
             tokenized_prompt = self.tokenizer.encode(prompt, truncation=False)
@@ -72,7 +80,7 @@ class LongBenchDataset(IterableDataset):
                     prompt = self.tokenizer.decode(tokenized_prompt[:half], skip_special_tokens=True)+self.tokenizer.decode(tokenized_prompt[-self.seq_len+half:], skip_special_tokens=True)
                 tokenized_prompt = self.tokenizer.encode(prompt, return_tensors="pt").squeeze(0)
                 if tokenized_prompt.shape[0] == self.seq_len:
-                    yield tokenized_prompt            
+                    yield tokenized_prompt     
 
 # if __name__ == "__main__":
 #     from transformers import LlamaTokenizer, DataCollatorForLanguageModeling
