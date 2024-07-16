@@ -75,10 +75,11 @@ target_dec_list = [args.gamma + 1]
 
 engine = LMBackend(dtype=DTYPE, device=DEVICE, dec_list=target_dec_list)
 engine.load_model(checkpoint_path, use_tp=use_tp, rank_group = args.rank_group, group=global_group)
+vocab_size = engine.model.config.vocab_size
 if args.compile:
     engine.compile()
 engine.setup_caches(max_batch_size=BATCH_SIZE, max_seq_length=MAX_LEN)
-target_sample = cuda_graph_for_sampling_argmax_batch(device=DEVICE, dtype=DTYPE, batch_size=BATCH_SIZE, idx_len=args.gamma+1)
+target_sample = cuda_graph_for_sampling_argmax_batch(device=DEVICE, dtype=DTYPE, dim=vocab_size, batch_size=BATCH_SIZE, idx_len=args.gamma+1)
 
 if not use_tp:
     draft = LMBackend_Draft(dtype=DTYPE, device=DEVICE, dec_list=[1,2])
@@ -88,7 +89,7 @@ if not use_tp:
     draft.setup_caches(max_batch_size=BATCH_SIZE, max_seq_length=MAX_LEN, kv_len=args.streamingllm_budget)
     draft_sample = {}
     for i in [1, 2]:
-        draft_sample[i] = cuda_graph_for_sampling_argmax_batch(device=DEVICE, dtype=DTYPE, batch_size=BATCH_SIZE, idx_len=i)
+        draft_sample[i] = cuda_graph_for_sampling_argmax_batch(device=DEVICE, dtype=DTYPE, dim=vocab_size, batch_size=BATCH_SIZE, idx_len=i)
 else:
     if rank in args.draft_ranks:
         draft = LMBackend_Draft(dtype=DTYPE, device=DEVICE, dec_list=[1,2])
@@ -98,12 +99,11 @@ else:
         draft.setup_caches(max_batch_size=BATCH_SIZE, max_seq_length=MAX_LEN, kv_len=args.streamingllm_budget)
         draft_sample = {}
         for i in [1, 2]:
-            draft_sample[i] = cuda_graph_for_sampling_argmax_batch(device=DEVICE, dtype=DTYPE, batch_size=BATCH_SIZE, idx_len=i)
+            draft_sample[i] = cuda_graph_for_sampling_argmax_batch(device=DEVICE, dtype=DTYPE, dim=vocab_size, batch_size=BATCH_SIZE, idx_len=i)
     dist.barrier()
 
 tokenizer = LlamaTokenizer.from_pretrained("meta-llama/Llama-2-7b-hf")
 tokenizer.pad_token = tokenizer.eos_token
-vocab_size = engine.model.config.vocab_size
 dataset = convert_pg19_dataset(tokenizer=tokenizer, seq_len=prefill)
 dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=True)
 num_eval_steps = min(len(dataloader), end_step)
@@ -153,6 +153,7 @@ for step, batch in pbar:
             t1 = time.time()
 
         # Draft speculation
+        import pdb; pdb.set_trace()
         if not use_tp:
             for i in range(args.gamma):
                 if i == 0:
@@ -162,7 +163,8 @@ for step, batch in pbar:
                         tokens_buffer[:,i+1:i+2] = next_tokens.gather(1, cachelens_update.view(-1,1) - 1)
                         next_double = False
                     else:
-                        tokens_buffer[:,i+1:i+2] = draft_sample[1](draft.inference(tokens_buffer[:, i].view(-1,1)))
+                        draft_logits = draft.inference(tokens_buffer[:, i].view(-1,1))
+                        tokens_buffer[:,i+1:i+2] = draft_sample[1](draft_logits)
                     continue
                 tokens_buffer[:,i+1:i+2] = draft_sample[1](draft.inference(tokens_buffer[:, i].view(-1,1)))
         else:
@@ -186,6 +188,7 @@ for step, batch in pbar:
 
         # Target Verification
         target_logits = engine.inference(tokens_buffer)
+        import pdb; pdb.set_trace()
         # target_tokens = sample(target_logits, args.top_p, args.temperature)
         target_tokens = target_sample(target_logits)
         target_steps+=1
