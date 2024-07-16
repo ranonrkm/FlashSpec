@@ -153,7 +153,6 @@ for step, batch in pbar:
             t1 = time.time()
 
         # Draft speculation
-        import pdb; pdb.set_trace()
         if not use_tp:
             for i in range(args.gamma):
                 if i == 0:
@@ -188,7 +187,6 @@ for step, batch in pbar:
 
         # Target Verification
         target_logits = engine.inference(tokens_buffer)
-        import pdb; pdb.set_trace()
         # target_tokens = sample(target_logits, args.top_p, args.temperature)
         target_tokens = target_sample(target_logits)
         target_steps+=1
