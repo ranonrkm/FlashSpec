@@ -70,8 +70,9 @@ class LongBenchDataset(IterableDataset):
                 if len(tokenized_prompt) > self.seq_len:
                     half = self.seq_len // 2
                     prompt = self.tokenizer.decode(tokenized_prompt[:half], skip_special_tokens=True)+self.tokenizer.decode(tokenized_prompt[-self.seq_len+half:], skip_special_tokens=True)
-                tokenized_prompt = self.tokenizer.encode(prompt, return_tensors="pt", truncation=True, max_length=self.seq_len).squeeze(0)
-                yield tokenized_prompt                
+                tokenized_prompt = self.tokenizer.encode(prompt, return_tensors="pt").squeeze(0)
+                if tokenized_prompt.shape[0] == self.seq_len:
+                    yield tokenized_prompt            
 
 # if __name__ == "__main__":
 #     from transformers import LlamaTokenizer, DataCollatorForLanguageModeling
