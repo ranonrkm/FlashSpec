@@ -77,14 +77,18 @@ import torch
 from flash_attn import flash_attn_with_kvcache, flash_attn_func
 import time
 
+batch_size = 32
+dec_len = 4
+context_len = 32000
+
 with torch.device("cuda"):
-    q = torch.randn((32, 4, 32, 128), dtype=torch.bfloat16)
-    k_cache = torch.randn((32, 16000, 32, 128), dtype=torch.bfloat16)
-    v_cache = torch.randn((32, 16000, 32, 128), dtype=torch.bfloat16)
-    k = torch.randn((32, 4, 32, 128), dtype=torch.bfloat16)
-    v = torch.randn((32, 4, 32, 128), dtype=torch.bfloat16)
+    q = torch.randn((batch_size, dec_len, 32, 128), dtype=torch.bfloat16)
+    k_cache = torch.randn((batch_size, context_len, 32, 128), dtype=torch.bfloat16)
+    v_cache = torch.randn((batch_size, context_len, 32, 128), dtype=torch.bfloat16)
+    k = torch.randn((batch_size, dec_len, 32, 128), dtype=torch.bfloat16)
+    v = torch.randn((batch_size, dec_len, 32, 128), dtype=torch.bfloat16)
     cache_seqlens = torch.zeros(32, dtype=torch.int32)
-    cache_seqlens += 15996
+    cache_seqlens += 31996
 
 torch.cuda.synchronize()
 t1 = time.perf_counter()
@@ -102,15 +106,18 @@ torch.cuda.synchronize()
 t2 = time.perf_counter()
 print((t2-t1)/1000)
 
+batch_size = 64
+context_len= 16000
+dec_len = 4
 
 with torch.device("cuda"):
-    q = torch.randn((16, 8, 32, 128), dtype=torch.bfloat16)
-    k_cache = torch.randn((16, 16000, 32, 128), dtype=torch.bfloat16)
-    v_cache = torch.randn((16, 16000, 32, 128), dtype=torch.bfloat16)
-    k = torch.randn((16, 8, 32, 128), dtype=torch.bfloat16)
-    v = torch.randn((16, 8, 32, 128), dtype=torch.bfloat16)
-    cache_seqlens = torch.zeros(16, dtype=torch.int32)
-    cache_seqlens += 15992
+    q = torch.randn((batch_size, dec_len, 32, 128), dtype=torch.bfloat16)
+    k_cache = torch.randn((batch_size, context_len, 32, 128), dtype=torch.bfloat16)
+    v_cache = torch.randn((batch_size, context_len, 32, 128), dtype=torch.bfloat16)
+    k = torch.randn((batch_size, dec_len, 32, 128), dtype=torch.bfloat16)
+    v = torch.randn((batch_size, dec_len, 32, 128), dtype=torch.bfloat16)
+    cache_seqlens = torch.zeros(32, dtype=torch.int32)
+    cache_seqlens += 15996
 
 torch.cuda.synchronize()
 t1 = time.perf_counter()
