@@ -56,7 +56,8 @@ def init_dist(draft_ranks=None):
     world_size = _get_world_size()
     torch.cuda.set_device(global_rank)
     dist.init_process_group(backend="nccl", rank=global_rank, world_size=world_size)
-    global_group = dist.group.WORLD
+    # global_group = dist.group.WORLD
+    global_group = dist.new_group([0,1,2,3,4,5,6,7])
     if draft_ranks != None:
         draft_group = dist.new_group(draft_ranks)
         return global_rank, global_group, draft_group
