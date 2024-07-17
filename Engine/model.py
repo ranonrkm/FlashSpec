@@ -157,8 +157,8 @@ class TransformerBlock(nn.Module):
         self.attention_norm = RMSNorm(config.dim, config.norm_eps)
 
     def forward(self, x: Tensor, freqs_cis: Tensor, cache_seqlens: Tensor) -> Tensor:
-        h = x + self.attention(self.attention_norm(x), freqs_cis, cache_seqlens)
-        out = h + self.feed_forward(self.ffn_norm(h))
+        out = x + self.attention(self.attention_norm(x), freqs_cis, cache_seqlens)
+        # out = h + self.feed_forward(self.ffn_norm(h))
         return out
 
 
