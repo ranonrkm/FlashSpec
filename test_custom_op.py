@@ -87,7 +87,7 @@ with torch.device("cuda"):
     v_cache = torch.randn((batch_size, context_len, 32, 128), dtype=torch.bfloat16)
     k = torch.randn((batch_size, dec_len, 32, 128), dtype=torch.bfloat16)
     v = torch.randn((batch_size, dec_len, 32, 128), dtype=torch.bfloat16)
-    cache_seqlens = torch.zeros(32, dtype=torch.int32)
+    cache_seqlens = torch.zeros(batch_size, dtype=torch.int32)
     cache_seqlens += 31996
 
 torch.cuda.synchronize()
@@ -116,7 +116,7 @@ with torch.device("cuda"):
     v_cache = torch.randn((batch_size, context_len, 32, 128), dtype=torch.bfloat16)
     k = torch.randn((batch_size, dec_len, 32, 128), dtype=torch.bfloat16)
     v = torch.randn((batch_size, dec_len, 32, 128), dtype=torch.bfloat16)
-    cache_seqlens = torch.zeros(32, dtype=torch.int32)
+    cache_seqlens = torch.zeros(batch_size, dtype=torch.int32)
     cache_seqlens += 15996
 
 torch.cuda.synchronize()
