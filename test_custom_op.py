@@ -107,93 +107,91 @@ import time
 # t2 = time.perf_counter()
 # print((t2-t1)/1000)
 
-batch_size = 32
-dec_len = 4
-context_len = 16000
-print(batch_size, dec_len, context_len)
+for dec_len in range(1, 4):
+    batch_size = 32
+    context_len = 16000
+    print(batch_size, dec_len, context_len)
 
-with torch.device("cuda"):
-    q = torch.randn((batch_size, dec_len, 32, 128), dtype=torch.bfloat16)
-    k_cache = torch.randn((batch_size, context_len, 32, 128), dtype=torch.bfloat16)
-    v_cache = torch.randn((batch_size, context_len, 32, 128), dtype=torch.bfloat16)
-    k = torch.randn((batch_size, dec_len, 32, 128), dtype=torch.bfloat16)
-    v = torch.randn((batch_size, dec_len, 32, 128), dtype=torch.bfloat16)
-    cache_seqlens = torch.zeros(batch_size, dtype=torch.int32)
-    cache_seqlens += 15996
+    with torch.device("cuda"):
+        q = torch.randn((batch_size, dec_len, 32, 128), dtype=torch.bfloat16)
+        k_cache = torch.randn((batch_size, context_len, 32, 128), dtype=torch.bfloat16)
+        v_cache = torch.randn((batch_size, context_len, 32, 128), dtype=torch.bfloat16)
+        k = torch.randn((batch_size, dec_len, 32, 128), dtype=torch.bfloat16)
+        v = torch.randn((batch_size, dec_len, 32, 128), dtype=torch.bfloat16)
+        cache_seqlens = torch.zeros(batch_size, dtype=torch.int32)
+        cache_seqlens += 15996
 
-torch.cuda.synchronize()
-t1 = time.perf_counter()
-for i in range(1000):
-    flash_attn_with_kvcache(q, k_cache, v_cache, k, v, cache_seqlens = cache_seqlens, causal=True)
-torch.cuda.synchronize()
-t2 = time.perf_counter()
-print((t2-t1)/1000)
+    torch.cuda.synchronize()
+    t1 = time.perf_counter()
+    for i in range(1000):
+        flash_attn_with_kvcache(q, k_cache, v_cache, k, v, cache_seqlens = cache_seqlens, causal=True)
+    torch.cuda.synchronize()
+    t2 = time.perf_counter()
+    print((t2-t1)/1000)
 
-torch.cuda.synchronize()
-t1 = time.perf_counter()
-for i in range(1000):
-    flash_attn_func(q, k_cache, v_cache, causal=True)
-torch.cuda.synchronize()
-t2 = time.perf_counter()
-print((t2-t1)/1000)
+    torch.cuda.synchronize()
+    t1 = time.perf_counter()
+    for i in range(1000):
+        flash_attn_func(q, k_cache, v_cache, causal=True)
+    torch.cuda.synchronize()
+    t2 = time.perf_counter()
+    print((t2-t1)/1000)
 
-batch_size = 32
-context_len= 16000
-dec_len = 4
-print(batch_size, dec_len, context_len)
+    batch_size = 32
+    context_len= 16000
+    print(batch_size, dec_len, context_len)
 
-with torch.device("cuda"):
-    q = torch.randn((batch_size, dec_len, 32, 128), dtype=torch.bfloat16)
-    k_cache = torch.randn((batch_size, context_len, 32//4, 128), dtype=torch.bfloat16)
-    v_cache = torch.randn((batch_size, context_len, 32//4, 128), dtype=torch.bfloat16)
-    k = torch.randn((batch_size, dec_len, 32//4, 128), dtype=torch.bfloat16)
-    v = torch.randn((batch_size, dec_len, 32//4, 128), dtype=torch.bfloat16)
-    cache_seqlens = torch.zeros(batch_size, dtype=torch.int32)
-    cache_seqlens += 15996
+    with torch.device("cuda"):
+        q = torch.randn((batch_size, dec_len, 32, 128), dtype=torch.bfloat16)
+        k_cache = torch.randn((batch_size, context_len, 32//4, 128), dtype=torch.bfloat16)
+        v_cache = torch.randn((batch_size, context_len, 32//4, 128), dtype=torch.bfloat16)
+        k = torch.randn((batch_size, dec_len, 32//4, 128), dtype=torch.bfloat16)
+        v = torch.randn((batch_size, dec_len, 32//4, 128), dtype=torch.bfloat16)
+        cache_seqlens = torch.zeros(batch_size, dtype=torch.int32)
+        cache_seqlens += 15996
 
-torch.cuda.synchronize()
-t1 = time.perf_counter()
-for i in range(1000):
-    flash_attn_with_kvcache(q, k_cache, v_cache, k, v, cache_seqlens = cache_seqlens, causal=True)
-torch.cuda.synchronize()
-t2 = time.perf_counter()
-print((t2-t1)/1000)
+    torch.cuda.synchronize()
+    t1 = time.perf_counter()
+    for i in range(1000):
+        flash_attn_with_kvcache(q, k_cache, v_cache, k, v, cache_seqlens = cache_seqlens, causal=True)
+    torch.cuda.synchronize()
+    t2 = time.perf_counter()
+    print((t2-t1)/1000)
 
-torch.cuda.synchronize()
-t1 = time.perf_counter()
-for i in range(1000):
-    flash_attn_func(q, k_cache, v_cache, causal=True)
-torch.cuda.synchronize()
-t2 = time.perf_counter()
-print((t2-t1)/1000)
+    torch.cuda.synchronize()
+    t1 = time.perf_counter()
+    for i in range(1000):
+        flash_attn_func(q, k_cache, v_cache, causal=True)
+    torch.cuda.synchronize()
+    t2 = time.perf_counter()
+    print((t2-t1)/1000)
 
 
-batch_size = 32
-context_len= 16000
-dec_len = 4
-print(batch_size, dec_len, context_len)
+    batch_size = 32
+    context_len= 16000
+    print(batch_size, dec_len, context_len)
 
-with torch.device("cuda"):
-    q = torch.randn((batch_size, dec_len, 32//4, 128), dtype=torch.bfloat16)
-    k_cache = torch.randn((batch_size, context_len, 32//4, 128), dtype=torch.bfloat16)
-    v_cache = torch.randn((batch_size, context_len, 32//4, 128), dtype=torch.bfloat16)
-    k = torch.randn((batch_size, dec_len, 32//4, 128), dtype=torch.bfloat16)
-    v = torch.randn((batch_size, dec_len, 32//4, 128), dtype=torch.bfloat16)
-    cache_seqlens = torch.zeros(batch_size, dtype=torch.int32)
-    cache_seqlens += 15996
+    with torch.device("cuda"):
+        q = torch.randn((batch_size, dec_len, 32//4, 128), dtype=torch.bfloat16)
+        k_cache = torch.randn((batch_size, context_len, 32//4, 128), dtype=torch.bfloat16)
+        v_cache = torch.randn((batch_size, context_len, 32//4, 128), dtype=torch.bfloat16)
+        k = torch.randn((batch_size, dec_len, 32//4, 128), dtype=torch.bfloat16)
+        v = torch.randn((batch_size, dec_len, 32//4, 128), dtype=torch.bfloat16)
+        cache_seqlens = torch.zeros(batch_size, dtype=torch.int32)
+        cache_seqlens += 15996
 
-torch.cuda.synchronize()
-t1 = time.perf_counter()
-for i in range(1000):
-    flash_attn_with_kvcache(q, k_cache, v_cache, k, v, cache_seqlens = cache_seqlens, causal=True)
-torch.cuda.synchronize()
-t2 = time.perf_counter()
-print((t2-t1)/1000)
+    torch.cuda.synchronize()
+    t1 = time.perf_counter()
+    for i in range(1000):
+        flash_attn_with_kvcache(q, k_cache, v_cache, k, v, cache_seqlens = cache_seqlens, causal=True)
+    torch.cuda.synchronize()
+    t2 = time.perf_counter()
+    print((t2-t1)/1000)
 
-torch.cuda.synchronize()
-t1 = time.perf_counter()
-for i in range(1000):
-    flash_attn_func(q, k_cache, v_cache, causal=True)
-torch.cuda.synchronize()
-t2 = time.perf_counter()
-print((t2-t1)/1000)
+    torch.cuda.synchronize()
+    t1 = time.perf_counter()
+    for i in range(1000):
+        flash_attn_func(q, k_cache, v_cache, causal=True)
+    torch.cuda.synchronize()
+    t2 = time.perf_counter()
+    print((t2-t1)/1000)
