@@ -10,17 +10,17 @@ import torch.distributed as dist
 
 torch.library.define(
     "mylib::custom_func",
-    "(Tensor q, Tensor(a!) k_cache, Tensor(a!) v_cache, Tensor k, Tensor v, Tensor cache_seqlens, bool causal) -> Tensor",
+    "(Tensor q, Tensor(a!) k_cache, Tensor(a!) v_cache, Tensor k, Tensor v, Tensor cache_seqlens) -> Tensor",
 )
 
 @torch.library.impl("mylib::custom_func", "cuda")
-def custom_func(q, k_cache, v_cache, k, v, cache_seqlens, causal):
+def custom_func(q, k_cache, v_cache, k, v, cache_seqlens):
     return flash_attn_with_kvcache(
-        q, k_cache, v_cache, k=k, v=v, cache_seqlens=cache_seqlens, causal=causal
+        q, k_cache, v_cache, k=k, v=v, cache_seqlens=cache_seqlens, causal=True
     )
 
 @torch.library.register_fake("mylib::custom_func")
-def custom_func_abstract(q, k_cache, v_cache, k, v, cache_seqlens, causal):
+def custom_func_abstract(q, k_cache, v_cache, k, v, cache_seqlens):
     return torch.empty_like(q)
 
 
@@ -195,13 +195,13 @@ class Attention(nn.Module):
         if self.kv_cache is not None:
             k_cache, v_cache = self.kv_cache.k_cache, self.kv_cache.v_cache
 
-        y = torch.ops.mylib.custom_func(q, k_cache, v_cache, k, v, cache_seqlens, True)
+        y = torch.ops.mylib.custom_func(q, k_cache, v_cache, k, v, cache_seqlens)
 
         y = y.contiguous().view(bsz, seqlen, self.dim)
 
         y = self.wo(y)
         if self.process_group != None:
-            dist.all_reduce(y, group=self.process_group)
+            dist.all_reduce(y, group = self.process_group)
         return y
 
 
@@ -216,7 +216,7 @@ class FeedForward(nn.Module):
     def forward(self, x: Tensor) -> Tensor:
         y = self.w2(F.silu(self.w1(x)) * self.w3(x))
         if self.process_group != None:
-            dist.all_reduce(y, group=self.process_group)
+            dist.all_reduce(y, group = self.process_group)
         return y
 
 

@@ -38,6 +38,3 @@ if 0 <= global_rank < 4:
 torch.cuda.synchronize()
 print("success")
 dist.destroy_process_group()
-
-# torchrun --standalone --nproc_per_node=8 --master_port=13456 test_allreduce.py
-# ENABLE_INTRA_NODE_COMM=1 torchrun --standalone --nproc_per_node=8 --master_port=13456 test_allreduce.py

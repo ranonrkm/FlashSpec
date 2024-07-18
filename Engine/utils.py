@@ -165,3 +165,20 @@ def load_model_draft(checkpoint_path, device, precision, use_tp, rank_group=None
 
     model = model.to(device=device, dtype=precision)
     return model.eval()
+
+def load_model_selfspec(checkpoint_path, device, precision, use_tp, rank_group=None, group=None):
+    import FlashSpec.Engine.model_selfspec as selfspec
+    with torch.device('meta'):
+        model = selfspec.Transformer.from_name(checkpoint_path.parent.name)
+    checkpoint = torch.load(str(checkpoint_path), mmap=True, weights_only=True)
+    if "model" in checkpoint and "stories" in str(checkpoint_path):
+        checkpoint = checkpoint["model"]
+    model.load_state_dict(checkpoint, assign=True)
+
+    if use_tp:
+        from FlashSpec.Engine.tp import apply_tp
+        print("Applying tensor parallel to model ...")
+        apply_tp(model, rank_group, group=group)
+
+    model = model.to(device=device, dtype=precision)
+    return model.eval()

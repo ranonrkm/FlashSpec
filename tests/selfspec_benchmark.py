@@ -4,7 +4,7 @@ import sys
 sys.path.append("..")
 from pathlib import Path
 import torch.distributed as dist
-from FlashSpec.Engine.utils import setup_seed, cuda_graph_for_sampling_argmax_batch, sampling_argmax_batch
+from FlashSpec.Engine.utils import setup_seed, sample, cuda_graph_for_sampling_argmax_batch
 from FlashSpec.Data.data_converter import convert_pg19_dataset
 from transformers import LlamaTokenizer
 from torch.utils.data.dataloader import DataLoader
@@ -15,29 +15,27 @@ from FlashSpec.Engine.backend_draft import LMBackend_Draft
 
 parser = argparse.ArgumentParser(description='Process model configuration and partitions.')
 parser.add_argument('--model', type=Path, default=Path("checkpoints/meta-llama/Llama-2-7b-hf/model.pth"), help='model')
-parser.add_argument('--draft_ranks', nargs='+', type=int, help='Target group of ranks')
-parser.add_argument('--streamingllm_budget', type=int, default=256, help='Dataset end index.')
-
 parser.add_argument('--target', type=Path, default=Path("checkpoints/meta-llama/Llama-2-70b-hf/model.pth"), help='target model')
-parser.add_argument('--rank_group', nargs='+', type=int, help='Target group of ranks')
-parser.add_argument('--compile', action='store_true', help='Whether to compile the model.')
-
 parser.add_argument('--gamma', type=int, default=5, help='start')
-
 parser.add_argument('--B', type=int, default=1, help='Batch size.')
-parser.add_argument('--prefix_len', type=int, default=4000, help='Prefix length')
-parser.add_argument('--gen_len', type=int, default=64, help='Generate length')
-
+parser.add_argument('--M', type=int, default=256, help='Maximum length.')
 parser.add_argument('--seed', type=int, default=123, help='Random seed.')
-
+parser.add_argument('--dataset', type=str, default="cnn", help='dataset path')
+parser.add_argument('--start', type=int, default=0, help='Dataset start index.')
+parser.add_argument('--end', type=int, default=200, help='Dataset end index.')
+parser.add_argument('--top_p', type=float, default=0.9, help='Target sample top_p.')
+parser.add_argument('--temperature', type=float, default=0.2, help='Target sample temperature.')
+parser.add_argument('--compile', action='store_true', help='Whether to compile the model.')
+parser.add_argument('--rank_group', nargs='+', type=int, help='Target group of ranks')
+parser.add_argument('--draft_ranks', nargs='+', type=int, help='Target group of ranks')
 parser.add_argument('--printoutput', action='store_true', help='Whether to compile the model.')
 parser.add_argument('--benchmark', action='store_true', help='Whether to compile the model.')
+parser.add_argument('--streamingllm_budget', type=int, default=256, help='Dataset end index.')
+parser.add_argument('--predix_len', type=int, default=4000, help='Dataset end index.')
 
-# Assert max length <= max context length
 args = parser.parse_args()
-assert args.prefix_len + args.gen_len + args.gamma + 1 <= 4096
+assert args.M + args.gamma + 1 <= 4096
 
-# Init model parallelism
 draft_tp = len(args.draft_ranks) > 1
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 global print
@@ -55,8 +53,7 @@ if use_tp:
 
 setup_seed(args.seed)
 print(f"Using device={DEVICE}")
-MAX_LEN_TARGET = args.prefix_len + args.gen_len + args.gamma
-MAX_LEN_DRAFT = args.streamingllm_budget + args.gen_len + args.gamma
+MAX_LEN = args.M + args.gamma +1
 DTYPE = torch.bfloat16
 BATCH_SIZE = args.B
 benchmark = args.benchmark
@@ -65,21 +62,19 @@ draft_checkpoint_path = args.model
 
 target_dec_list = [args.gamma + 1]
 
-# Load target model
 engine = LMBackend(dtype=DTYPE, device=DEVICE, dec_list=target_dec_list)
 engine.load_model(checkpoint_path, use_tp=use_tp, rank_group = args.rank_group, group=global_group)
 if args.compile:
     engine.compile()
-engine.setup_caches(max_batch_size=BATCH_SIZE, max_seq_length=MAX_LEN_TARGET)
+engine.setup_caches(max_batch_size=BATCH_SIZE, max_seq_length=MAX_LEN)
 target_sample = cuda_graph_for_sampling_argmax_batch(device=DEVICE, dtype=DTYPE, batch_size=BATCH_SIZE, idx_len=args.gamma+1)
 
-# Load draft model
 if not use_tp:
     draft = LMBackend_Draft(dtype=DTYPE, device=DEVICE, dec_list=[1,2])
     draft.load_model(draft_checkpoint_path, use_tp=False, rank_group=args.rank_group, group=global_group)
     if args.compile:
         draft.compile()
-    draft.setup_caches(max_batch_size=BATCH_SIZE, max_seq_length=MAX_LEN_DRAFT, kv_len=args.streamingllm_budget)
+    draft.setup_caches(max_batch_size=BATCH_SIZE, max_seq_length=MAX_LEN, kv_len=args.streamingllm_budget)
     draft_sample = {}
     for i in [1, 2]:
         draft_sample[i] = cuda_graph_for_sampling_argmax_batch(device=DEVICE, dtype=DTYPE, batch_size=BATCH_SIZE, idx_len=i)
@@ -89,16 +84,15 @@ else:
         draft.load_model(draft_checkpoint_path, use_tp=draft_tp, rank_group=args.draft_ranks, group=draft_group)
         if args.compile:
             draft.compile()
-        draft.setup_caches(max_batch_size=BATCH_SIZE, max_seq_length=MAX_LEN_DRAFT, kv_len=args.streamingllm_budget)
+        draft.setup_caches(max_batch_size=BATCH_SIZE, max_seq_length=MAX_LEN, kv_len=args.streamingllm_budget)
         draft_sample = {}
         for i in [1, 2]:
             draft_sample[i] = cuda_graph_for_sampling_argmax_batch(device=DEVICE, dtype=DTYPE, batch_size=BATCH_SIZE, idx_len=i)
     dist.barrier()
 
-# Load dataset
 tokenizer = LlamaTokenizer.from_pretrained("meta-llama/Llama-2-7b-hf")
 tokenizer.pad_token = tokenizer.eos_token
-dataset = convert_pg19_dataset(tokenizer=tokenizer, seq_len=args.prefix_len)
+dataset = convert_pg19_dataset(tokenizer=tokenizer, seq_len=4096)
 dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=True)
 num_eval_steps = len(dataloader)
 
@@ -110,29 +104,30 @@ if benchmark:
     target_time = 0.0
     verify_loop = 0.0
 
+
 for step, batch in tqdm(enumerate(dataloader), total=num_eval_steps):
-    input_ids = batch[0].to(DEVICE)
+    input_ids = batch[0][:,:4000].to(DEVICE)
     terminal = False
     tokens_buffer= torch.zeros((BATCH_SIZE, args.gamma+1), device=DEVICE).long()
-    output = torch.zeros(BATCH_SIZE, args.prefix_len + args.gen_len + 1, device=DEVICE).long()
+    output = torch.zeros(BATCH_SIZE, MAX_LEN, device=DEVICE).long()
     output[:, :input_ids.shape[1]] = input_ids
     num_nodes = torch.zeros(BATCH_SIZE,device=DEVICE).long()
     num_nodes += input_ids.shape[1]
 
     logits = engine.encode(input_ids=input_ids)[:,-1]
-
     if not use_tp:
         draft.encode(input_ids=input_ids)
     else:
         if rank in args.draft_ranks:
             draft.encode(input_ids=input_ids)
         dist.barrier()
-    
-    tokens_buffer[:,:1] = sampling_argmax_batch(logits=logits)
+    tokens_buffer[:,:1] = sample(logits=logits, top_p=args.top_p, T=args.temperature)
+
     
     next_double = False
     double_buffer = None
     cachelens_update = None
+
 
     torch.cuda.synchronize()
     start = time.perf_counter()
@@ -169,7 +164,6 @@ for step, batch in tqdm(enumerate(dataloader), total=num_eval_steps):
                     tokens_buffer[:,i+1:i+2] = draft_sample[1](draft.inference(tokens_buffer[:, i].view(-1,1)))
             dist.broadcast(tokens_buffer, src=args.draft_ranks[0], group=global_group)
 
-
         if benchmark:
             torch.cuda.synchronize()
             t2 = time.time()
@@ -185,7 +179,6 @@ for step, batch in tqdm(enumerate(dataloader), total=num_eval_steps):
             torch.cuda.synchronize()
             t3 = time.time()
             target_time+=t3-t2
-
 
     # Verify loop
         bonus_tokens = torch.full((BATCH_SIZE, 1), 0, device=DEVICE).long()
@@ -235,7 +228,7 @@ for step, batch in tqdm(enumerate(dataloader), total=num_eval_steps):
         num_nodes += accept_nums.flatten()
 
         # Check Number of Nodes + Bonus Token <= max_target_token
-        if num_nodes.max() + 1 >= args.prefix_len + args.gen_len:
+        if num_nodes.max() + 1 >= args.M:
             terminal = True
         # Put Bonus tokens to the tokens buffer, and prepare the variables for next itr
         if not terminal:
@@ -269,7 +262,7 @@ for step, batch in tqdm(enumerate(dataloader), total=num_eval_steps):
     num_gen_tokens += (num_nodes.sum() - input_ids.shape[1]*BATCH_SIZE)
     if args.printoutput:
         for i in range(BATCH_SIZE):
-            print(tokenizer.decode(output[i, args.prefix_len:num_nodes[i]]))
+            print(tokenizer.decode(output[i, :num_nodes[i]]))
     print("total time :{:.5f}s, time per iter :{:.5f}s, decoding step: {}, large model step: {}".format(total_time, total_time / target_steps, num_gen_tokens, target_steps))
     if benchmark:
         print("target time :{:.5f}s, draft time :{:.5f}s, verify loop : {}, avg generate len per sentence: {}".format(target_time/target_steps, draft_time / target_steps, verify_loop/target_steps, num_gen_tokens/target_steps/BATCH_SIZE))

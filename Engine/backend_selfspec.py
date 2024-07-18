@@ -1,15 +1,19 @@
 import torch
-from FlashSpec.Engine.model import Transformer
+from FlashSpec.Engine.model_selfspec import Transformer
 from FlashSpec.Engine.utils import load_model
 
 class LMBackend:
-    def __init__(self, dtype = torch.bfloat16, device: str = "cuda:0", dec_list: list = [1]) -> None:
+    def __init__(self, dtype = torch.bfloat16, device: str = "cuda:0", dec_list: list = [1], draft_dec_list: list = [1]) -> None:
         self.dtype = dtype
         self.device = device
         self.model_forward = {}
+        self.draft_forward = {}
         for dec_len in dec_list:
             if dec_len == 0: continue
             self.model_forward[dec_len] = lambda model, x, input_pos, cache_seqlens: model(x, input_pos, cache_seqlens)
+        for dec_len in draft_dec_list:
+            if dec_len == 0: continue
+            self.draft_forward[dec_len] = lambda model, x, input_pos, cache_seqlens: model.draft_forward(x, input_pos, cache_seqlens)
         self.prefill = lambda model, x, input_pos, cache_seqlens: model(x, input_pos, cache_seqlens)
         self.cachelens = None
 
@@ -32,6 +36,8 @@ class LMBackend:
         torch._inductor.config.fx_graph_cache = True # Experimental feature to reduce compilation times, will be on by default in future
         for key in self.model_forward.keys():
             self.model_forward[key] = torch.compile(self.model_forward[key], mode="reduce-overhead", fullgraph=True)
+        for key in self.draft_forward.keys():
+            self.draft_forward[key] = torch.compile(self.draft_forward[key], mode="reduce-overhead", fullgraph=True)
         if encode:
              self.prefill = torch.compile(self.prefill, mode="reduce-overhead", fullgraph=True)      
              
@@ -49,9 +55,21 @@ class LMBackend:
             return logits
     
     @torch.inference_mode()
+    def draft_inference(self, input_ids: torch.LongTensor, benchmark = False):
+            dec_len = input_ids.shape[1]
+            position_ids = self.cachelens.view(-1,1) + torch.arange(dec_len, device=self.device).unsqueeze(0).repeat(self.batch_size,1)
+            logits = self.draft_forward[dec_len](
+                model=self.model, 
+                x=input_ids.clone(),
+                input_pos=position_ids.clone(), 
+                cache_seqlens= self.cachelens.clone()) if dec_len in self.model_forward.keys() else self.model.draft_forward(input_ids.clone(), position_ids.clone(), self.cachelens.clone())
+            if not benchmark:
+                self.cachelens += dec_len
+            return logits
+    
+    @torch.inference_mode()
     def encode(self, input_ids: torch.LongTensor):
         self.cachelens.zero_()
-        self.clear_kv()
         logits = None
         seq_len = input_ids.shape[1]
         position_ids = torch.arange(seq_len, device=self.device).unsqueeze(0).repeat(self.batch_size,1)
@@ -92,7 +110,6 @@ class LMBackend:
         for b in self.model.layers:
             b.attention.kv_cache.k_cache.zero_()
             b.attention.kv_cache.v_cache.zero_()
-            
 
     
 
