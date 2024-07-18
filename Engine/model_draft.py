@@ -5,23 +5,7 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 from torch.nn import functional as F
-from flash_attn import flash_attn_with_kvcache
 import torch.distributed as dist
-
-torch.library.define(
-    "mylib::custom_func_2",
-    "(Tensor q, Tensor(a!) k_cache, Tensor(a!) v_cache) -> Tensor",
-)
-
-@torch.library.impl("mylib::custom_func_2", "cuda")
-def custom_func_2(q, k_cache, v_cache):
-    return flash_attn_with_kvcache(
-        q, k_cache, v_cache, causal=True
-    )
-
-@torch.library.register_fake("mylib::custom_func_2")
-def custom_func_2_abstract(q, k_cache, v_cache):
-    return torch.empty_like(q)
 
 
 def find_multiple(n: int, k: int) -> int:

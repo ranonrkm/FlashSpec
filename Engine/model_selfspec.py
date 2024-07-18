@@ -5,24 +5,7 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 from torch.nn import functional as F
-from flash_attn import flash_attn_with_kvcache
 import torch.distributed as dist
-
-torch.library.define(
-    "mylib::custom_func",
-    "(Tensor q, Tensor(a!) k_cache, Tensor(a!) v_cache, Tensor k, Tensor v, Tensor cache_seqlens, bool causal) -> Tensor",
-)
-
-@torch.library.impl("mylib::custom_func", "cuda")
-def custom_func(q, k_cache, v_cache, k, v, cache_seqlens, causal):
-    return flash_attn_with_kvcache(
-        q, k_cache, v_cache, k=k, v=v, cache_seqlens=cache_seqlens, causal=causal
-    )
-
-@torch.library.register_fake("mylib::custom_func")
-def custom_func_abstract(q, k_cache, v_cache, k, v, cache_seqlens, causal):
-    return torch.empty_like(q)
-
 
 def find_multiple(n: int, k: int) -> int:
     if n % k == 0:
@@ -90,6 +73,7 @@ class KVCache(nn.Module):
         cache_shape = (max_batch_size, max_seq_length, n_heads, head_dim)
         self.register_buffer('k_cache', torch.zeros(cache_shape, dtype=dtype))
         self.register_buffer('v_cache', torch.zeros(cache_shape, dtype=dtype))
+        self.register_buffer('batch_indices',torch.arange(max_batch_size).unsqueeze(1))
         self.streaming_budget = streaming_budget
 
     def update(self, cache_seqs, k_val, v_val):
@@ -136,6 +120,7 @@ class Transformer(nn.Module):
             b.attention.kv_cache = KVCache(max_batch_size, max_seq_length, self.config.n_local_heads, head_dim, dtype, streaming_budget)
 
         self.freqs_cis = precompute_freqs_cis(self.config.block_size, self.config.dim // self.config.n_head, self.config.rope_base, dtype)
+        self.streaming_freqs = self.freqs_cis[torch.arange(streaming_budget).unsqueeze(0).repeat(max_batch_size,1)]
 
     def forward(self, idx: Tensor, input_pos: Optional[Tensor], cache_seqlens: Tensor) -> Tensor:
         assert self.freqs_cis is not None, "Caches must be initialized first"
@@ -154,7 +139,7 @@ class Transformer(nn.Module):
         freqs_cis = self.freqs_cis[input_pos]
         x = self.tok_embeddings(idx)
         for i, layer in enumerate(self.layers):
-            x = layer.draft_forward(x, freqs_cis, cache_seqlens)
+            x = layer.draft_forward(x, freqs_cis, self.streaming_freqs, cache_seqlens)
         x = self.norm(x)
         logits = self.output(x)
         return logits
@@ -177,8 +162,8 @@ class TransformerBlock(nn.Module):
         out = h + self.feed_forward(self.ffn_norm(h))
         return out
     
-    def draft_forward(self, x: Tensor, freqs_cis: Tensor, cache_seqlens: Tensor) -> Tensor:
-        h = x + self.attention.draft_forward(self.attention_norm(x), freqs_cis, cache_seqlens)
+    def draft_forward(self, x: Tensor, freqs_cis: Tensor, streaming_freqs: Tensor, cache_seqlens: Tensor) -> Tensor:
+        h = x + self.attention.draft_forward(self.attention_norm(x), freqs_cis, streaming_freqs, cache_seqlens)
         out = h + self.feed_forward.draft_forward(self.ffn_norm(h))
         return out
 
@@ -224,7 +209,7 @@ class Attention(nn.Module):
         if self.kv_cache is not None:
             k_cache, v_cache = self.kv_cache.k_cache, self.kv_cache.v_cache
 
-        y = torch.ops.mylib.custom_func(q, k_cache, v_cache, k, v, cache_seqlens, True)
+        y = torch.ops.mylib.custom_func(q, k_cache, v_cache, k, v, cache_seqlens)
 
         y = y.contiguous().view(bsz, seqlen, self.dim)
 
@@ -233,7 +218,7 @@ class Attention(nn.Module):
             dist.all_reduce(y)
         return y
     
-    def draft_forward(self, x: Tensor, freqs_cis: Tensor, cache_seqlens: Tensor) -> Tensor:
+    def draft_forward(self, x: Tensor, freqs_cis: Tensor, streaming_freqs: Tensor, cache_seqlens: Tensor) -> Tensor:
         bsz, seqlen, _ = x.shape
 
         kv_size = self.n_local_heads * self.head_dim
@@ -243,13 +228,13 @@ class Attention(nn.Module):
         k = k.view(bsz, seqlen, self.n_local_heads, self.head_dim)
         v = v.view(bsz, seqlen, self.n_local_heads, self.head_dim)
 
-        q = apply_rotary_emb(q, freqs_cis)
-        k = apply_rotary_emb(k, freqs_cis)
-
         if self.kv_cache is not None:
-            k_cache, v_cache = self.kv_cache.k_cache, self.kv_cache.v_cache
+            k, v = self.kv_cache.update(cache_seqlens, k, v)
+        
+        q = apply_rotary_emb(q, freqs_cis)
+        k = apply_rotary_emb(k, streaming_freqs)
 
-        y = torch.ops.mylib.custom_func(q, k_cache, v_cache, k, v, cache_seqlens, True)
+        y = torch.ops.mylib.custom_func_2(q, k, v)
 
         y = y.contiguous().view(bsz, seqlen, self.dim)
 

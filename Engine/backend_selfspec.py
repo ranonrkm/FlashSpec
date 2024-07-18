@@ -1,6 +1,6 @@
 import torch
 from FlashSpec.Engine.model_selfspec import Transformer
-from FlashSpec.Engine.utils import load_model
+from FlashSpec.Engine.utils import load_model_selfspec
 
 class LMBackend:
     def __init__(self, dtype = torch.bfloat16, device: str = "cuda:0", dec_list: list = [1], draft_dec_list: list = [1]) -> None:
@@ -16,17 +16,19 @@ class LMBackend:
             self.draft_forward[dec_len] = lambda model, x, input_pos, cache_seqlens: model.draft_forward(x, input_pos, cache_seqlens)
         self.prefill = lambda model, x, input_pos, cache_seqlens: model(x, input_pos, cache_seqlens)
         self.cachelens = None
+        self.draft_cachelens = None
 
     def load_model(self, checkpoints: str, use_tp: bool, rank_group=None, group = None):
-        self.model: Transformer = load_model(checkpoint_path=checkpoints, device=self.device, precision=self.dtype, use_tp= use_tp, rank_group=rank_group, group = group)
+        self.model: Transformer = load_model_selfspec(checkpoint_path=checkpoints, device=self.device, precision=self.dtype, use_tp= use_tp, rank_group=rank_group, group = group)
 
     @torch.inference_mode()
-    def setup_caches(self, max_batch_size: int = 1, max_seq_length: int = 2048):
+    def setup_caches(self, max_batch_size: int = 1, max_seq_length: int = 2048, streamingllm_budget: int = 256):
         self.max_length = max_seq_length
         self.batch_size = max_batch_size
         self.cachelens = torch.zeros(max_batch_size, dtype=torch.int32, device=self.device)
+        self.draft_cachelens = torch.zeros(max_batch_size, dtype=torch.int32, device=self.device)
         with torch.device(self.device):
-            self.model.setup_caches(max_batch_size=max_batch_size, max_seq_length=max_seq_length)
+            self.model.setup_caches(max_batch_size=max_batch_size, max_seq_length=max_seq_length, streaming_budget=streamingllm_budget)
 
     def compile(self, encode=False):
         import torch._dynamo.config
@@ -52,24 +54,32 @@ class LMBackend:
                 cache_seqlens= self.cachelens.clone()) if dec_len in self.model_forward.keys() else self.model.forward(input_ids.clone(), position_ids.clone(), self.cachelens.clone())
             if not benchmark:
                 self.cachelens += dec_len
+
+            # print(self.draft_cachelens, self.cachelens)
+
             return logits
     
     @torch.inference_mode()
-    def draft_inference(self, input_ids: torch.LongTensor, benchmark = False):
+    def draft_inference(self, input_ids: torch.LongTensor, benchmark = False, cachelen_update = None):
             dec_len = input_ids.shape[1]
-            position_ids = self.cachelens.view(-1,1) + torch.arange(dec_len, device=self.device).unsqueeze(0).repeat(self.batch_size,1)
+            position_ids = self.draft_cachelens.view(-1,1) + torch.arange(dec_len, device=self.device).unsqueeze(0).repeat(self.batch_size,1)
             logits = self.draft_forward[dec_len](
                 model=self.model, 
                 x=input_ids.clone(),
                 input_pos=position_ids.clone(), 
-                cache_seqlens= self.cachelens.clone()) if dec_len in self.model_forward.keys() else self.model.draft_forward(input_ids.clone(), position_ids.clone(), self.cachelens.clone())
+                cache_seqlens= self.draft_cachelens.clone()) if dec_len in self.model_forward.keys() else self.model.draft_forward(input_ids.clone(), position_ids.clone(), self.draft_cachelens.clone())
             if not benchmark:
-                self.cachelens += dec_len
+                if cachelen_update == None:
+                    self.draft_cachelens += dec_len
+                else:
+                    self.draft_cachelens += cachelen_update
             return logits
     
     @torch.inference_mode()
     def encode(self, input_ids: torch.LongTensor):
         self.cachelens.zero_()
+        self.draft_cachelens.zero_()
+        self.clear_kv()
         logits = None
         seq_len = input_ids.shape[1]
         position_ids = torch.arange(seq_len, device=self.device).unsqueeze(0).repeat(self.batch_size,1)
@@ -101,6 +111,7 @@ class LMBackend:
             )
 
         self.cachelens += seq_len
+        self.draft_cachelens += seq_len
         
         return logits
           
