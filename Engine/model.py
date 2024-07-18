@@ -160,8 +160,9 @@ class TransformerBlock(nn.Module):
         # h = x + self.attention(self.attention_norm(x), freqs_cis, cache_seqlens)
         # out = h # remove ffn
         
-        h = x # remove attn
-        out = h + self.feed_forward(self.ffn_norm(h))
+        # h = x # remove attn
+        # out = h + self.feed_forward(self.ffn_norm(h))
+        out = x
         return out
 
 
