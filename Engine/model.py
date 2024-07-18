@@ -190,7 +190,6 @@ class Attention(nn.Module):
 
     def forward(self, x: Tensor, freqs_cis: Tensor, cache_seqlens: Tensor) -> Tensor:
         bsz, seqlen, _ = x.shape
-        import pdb; pdb.set_trace()
         kv_size = self.n_local_heads * self.head_dim
         q, k, v = self.wqkv(x).split([self.dim, kv_size, kv_size], dim=-1)
 
