@@ -7,7 +7,7 @@ from torch import Tensor
 from torch.nn import functional as F
 import torch.distributed as dist
 
-from utils import custom_func, custom_func_2
+from FlashSpec.Engine.utils import custom_func, custom_func_2
 
 
 def find_multiple(n: int, k: int) -> int:
