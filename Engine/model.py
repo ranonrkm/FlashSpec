@@ -205,9 +205,8 @@ class Attention(nn.Module):
             k_cache, v_cache = self.kv_cache.k_cache, self.kv_cache.v_cache
 
         y = torch.ops.mylib.custom_func(q, k_cache, v_cache, k, v, cache_seqlens, True) # flash attn
-
         y = y.contiguous().view(bsz, seqlen, self.dim)
-        # y = self.wo(y) # output projection
+        y = self.wo(y) # output projection
         return y
 
 
