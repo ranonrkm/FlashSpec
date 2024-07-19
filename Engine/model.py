@@ -180,7 +180,7 @@ class Attention(nn.Module):
         if self.kv_cache is not None:
             k_cache, v_cache = self.kv_cache.k_cache, self.kv_cache.v_cache
 
-        if seqlen >= 64:
+        if seqlen==1 or seqlen >= 64:
             # for prefill, use original impl
             y = torch.ops.mylib.custom_func(q, k_cache, v_cache, k, v, cache_seqlens)
         else:
