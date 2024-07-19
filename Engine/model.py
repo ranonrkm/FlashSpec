@@ -183,8 +183,8 @@ class Attention(nn.Module):
         y = y.contiguous().view(bsz, seqlen, self.dim)
 
         y = self.wo(y)
-        if self.process_group != None:
-            dist.all_reduce(y, group = self.process_group)
+        # if self.process_group != None:
+        dist.all_reduce(y, group = self.process_group)
         return y
 
 
@@ -198,8 +198,8 @@ class FeedForward(nn.Module):
 
     def forward(self, x: Tensor) -> Tensor:
         y = self.w2(F.silu(self.w1(x)) * self.w3(x))
-        if self.process_group != None:
-            dist.all_reduce(y, group = self.process_group)
+        # if self.process_group != None:
+        dist.all_reduce(y, group = self.process_group)
         return y
 
 
