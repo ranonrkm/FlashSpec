@@ -65,6 +65,12 @@ def gqa_custom(q, k_cache, v_cache, k, v, cache_seqlens):
     sumexp_total = sumexp_past + sumexp_new
     y = (y_past * sumexp_past + y_new * sumexp_new) / sumexp_total
 
+    # insert new k and v to k_cache and v_cache, starting from cache_seqlens position
+    insert_indices = cache_seqlens.unsqueeze(-1) + torch.arange(T, device=cache_seqlens.device).unsqueeze(0)
+    insert_indices = insert_indices[..., None, None].expand(-1, -1, H_k, D)
+    k_cache.scatter_(1, insert_indices, k)
+    v_cache.scatter_(1, insert_indices, v)   
+
     return y.to(q.dtype)
 
 
