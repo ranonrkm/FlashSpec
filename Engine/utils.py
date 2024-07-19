@@ -34,6 +34,38 @@ def custom_func_2(q, k_cache, v_cache):
 def custom_func_2_abstract(q, k_cache, v_cache):
     return torch.empty_like(q)
 
+torch.library.define(
+    "mylib::gqa_custom",
+    "(Tensor q, Tensor(a!) k_cache, Tensor(a!) v_cache, Tensor k, Tensor v, Tensor cache_seqlens, bool causal) -> Tensor",
+)
+
+@torch.library.register_fake("mylib::gqa_custom")
+def gqa_custom_abstract(q, k_cache, v_cache, k, v, cache_seqlens, causal):
+    return torch.empty_like(q)
+
+@torch.library.impl("mylib::gqa_custom", "cuda")
+def gqa_custom(q, k_cache, v_cache, k, v, cache_seqlens, causal):
+    B, T, H_q, D = q.size()
+    H_k = k.size(2)
+    rep = H_q // H_k
+    q_reshaped = q.view(B, T, H_k, rep, D).transpose(2, 3).contiguous().view(B, T*rep, H_k, D).contiguous()
+    y_past, lse_past = flash_attn_with_kvcache(q_reshaped, k_cache, v_cache, None, None, cache_seqlens=cache_seqlens, causal=False, return_softmax_lse=True)
+    y_new, lse_new = flash_attn_with_kvcache(q, k, v, None, None, None, causal=True, return_softmax_lse=True)  
+    y_past = y_past.view(B, T, rep, H_k, D).transpose(2, 3).contiguous().view(B, T, H_q, D)
+    # lse_past: B, H, T*r -> B, T*r, H -> B, T, r, H -> B, T, H, r -> B, T, H*r, 1
+    lse_past = lse_past.transpose(1, 2).reshape(B, T, rep, H_k).transpose(2, 3).contiguous().view(B, T, H_q, 1)
+    lse_past = lse_past.to(y_past.dtype)
+    lse_new = lse_new.unsqueeze(-1).transpose(1, 2).to(y_new.dtype)
+    
+    sumexp_past = torch.exp(lse_past.float())
+    sumexp_new = torch.exp(lse_new.float())
+
+    sumexp_total = sumexp_past + sumexp_new
+    y = (y_past * sumexp_past + y_new * sumexp_new) / sumexp_total
+
+    return y.to(q.dtype)
+
+
 def get_sampling_logits(logits :torch.Tensor, top_p:float, T: float, replicate = False):
     if replicate:
         logits = logits.clone()

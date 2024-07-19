@@ -7,6 +7,8 @@ from torch import Tensor
 from torch.nn import functional as F
 import torch.distributed as dist
 
+from FlashSpec.Engine.utils import custom_func, gqa_custom
+
 def find_multiple(n: int, k: int) -> int:
     if n % k == 0:
         return n
@@ -178,7 +180,11 @@ class Attention(nn.Module):
         if self.kv_cache is not None:
             k_cache, v_cache = self.kv_cache.k_cache, self.kv_cache.v_cache
 
-        y = torch.ops.mylib.custom_func(q, k_cache, v_cache, k, v, cache_seqlens)
+        if seqlen >= 64:
+            # for prefill, use original impl
+            y = torch.ops.mylib.custom_func(q, k_cache, v_cache, k, v, cache_seqlens)
+        else:
+            y = torch.ops.mylib.gqa_custom(q, k_cache, v_cache, k, v, cache_seqlens, causal=True)
 
         y = y.contiguous().view(bsz, seqlen, self.dim)
 
