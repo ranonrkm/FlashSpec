@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 import random
+from einops import rearrange
 from torch.nn.functional import softmax
 from flash_attn import flash_attn_with_kvcache
 
@@ -36,15 +37,15 @@ def custom_func_2_abstract(q, k_cache, v_cache):
 
 torch.library.define(
     "mylib::gqa_custom",
-    "(Tensor q, Tensor(a!) k_cache, Tensor(a!) v_cache, Tensor k, Tensor v, Tensor cache_seqlens, bool causal) -> Tensor",
+    "(Tensor q, Tensor(a!) k_cache, Tensor(a!) v_cache, Tensor k, Tensor v, Tensor cache_seqlens) -> Tensor",
 )
 
 @torch.library.register_fake("mylib::gqa_custom")
-def gqa_custom_abstract(q, k_cache, v_cache, k, v, cache_seqlens, causal):
+def gqa_custom_abstract(q, k_cache, v_cache, k, v, cache_seqlens):
     return torch.empty_like(q)
 
 @torch.library.impl("mylib::gqa_custom", "cuda")
-def gqa_custom(q, k_cache, v_cache, k, v, cache_seqlens, causal):
+def gqa_custom(q, k_cache, v_cache, k, v, cache_seqlens):
     B, T, H_q, D = q.size()
     H_k = k.size(2)
     rep = H_q // H_k
@@ -53,7 +54,8 @@ def gqa_custom(q, k_cache, v_cache, k, v, cache_seqlens, causal):
     y_new, lse_new = flash_attn_with_kvcache(q, k, v, None, None, None, causal=True, return_softmax_lse=True)  
     y_past = y_past.view(B, T, rep, H_k, D).transpose(2, 3).contiguous().view(B, T, H_q, D)
     # lse_past: B, H, T*r -> B, T*r, H -> B, T, r, H -> B, T, H, r -> B, T, H*r, 1
-    lse_past = lse_past.transpose(1, 2).reshape(B, T, rep, H_k).transpose(2, 3).contiguous().view(B, T, H_q, 1)
+    # lse_past = lse_past.transpose(1, 2).reshape(B, T, rep, H_k).transpose(2, 3).contiguous().view(B, T, H_q, 1)
+    lse_past = rearrange(lse_past, 'b h (t r) -> b t (h r) 1', r=rep).contiguous()
     lse_past = lse_past.to(y_past.dtype)
     lse_new = lse_new.unsqueeze(-1).transpose(1, 2).to(y_new.dtype)
     

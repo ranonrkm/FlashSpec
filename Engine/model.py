@@ -68,6 +68,7 @@ transformer_configs = {
     "llama-160m": dict(block_size=2048, n_layer=12, n_head=12, n_local_heads=12, dim=768, intermediate_size=3072, vocab_size=32000),
     "1.3b": dict(block_size =2048, n_layer=24, n_head=16, n_local_heads=16, dim=2048, intermediate_size=5504, vocab_size=32000),
     "tinyllama": dict(block_size =2048, n_layer=22, n_head=32, n_local_heads=4, dim=2048, intermediate_size=5632, vocab_size=32000),
+    "Llama-3-8B-Instruct-1048k": dict(block_size=1048576, n_layer=32, n_head=32, n_local_heads=8, dim=4096, intermediate_size=14336, vocab_size=128256, rope_base=3580165449),
 }
 class KVCache(nn.Module):
     def __init__(self, max_batch_size, max_seq_length, n_heads, head_dim, dtype=torch.bfloat16):
@@ -120,6 +121,17 @@ class Transformer(nn.Module):
         logits = self.output(x)
         return logits
 
+    def prefill(self, idx: Tensor, input_pos: Optional[Tensor], cache_seqlens: Tensor) -> Tensor:
+        assert self.freqs_cis is not None, "Caches must be initialized first"
+
+        freqs_cis = self.freqs_cis[input_pos]
+        x = self.tok_embeddings(idx)
+        for i, layer in enumerate(self.layers):
+            x = layer.prefill(x, freqs_cis, cache_seqlens)
+        x = self.norm(x)
+        logits = self.output(x)
+        return logits
+
     @classmethod
     def from_name(cls, name: str):
         return cls(ModelArgs.from_name(name))
@@ -135,6 +147,11 @@ class TransformerBlock(nn.Module):
 
     def forward(self, x: Tensor, freqs_cis: Tensor, cache_seqlens: Tensor) -> Tensor:
         h = x + self.attention(self.attention_norm(x), freqs_cis, cache_seqlens)
+        out = h + self.feed_forward(self.ffn_norm(h))
+        return out
+
+    def prefill(self, x: Tensor, freqs_cis: Tensor, cache_seqlens: Tensor) -> Tensor:
+        h = x + self.attention.prefill(self.attention_norm(x), freqs_cis, cache_seqlens)
         out = h + self.feed_forward(self.ffn_norm(h))
         return out
 
@@ -156,6 +173,11 @@ class Attention(nn.Module):
         self.n_local_heads = config.n_local_heads
         self.dim = config.dim
         self._register_load_state_dict_pre_hook(self.load_hook)
+
+        if self.n_head == self.n_local_heads:
+            self._attn = torch.ops.mylib.custom_func
+        else:
+            self._attn = torch.ops.mylib.gqa_custom
 
     def load_hook(self, state_dict, prefix, *args):
         if prefix + "wq.weight" in state_dict:
@@ -180,12 +202,36 @@ class Attention(nn.Module):
         if self.kv_cache is not None:
             k_cache, v_cache = self.kv_cache.k_cache, self.kv_cache.v_cache
 
-        if seqlen==1 or seqlen >= 64:
-            # for prefill, use original impl
-            y = torch.ops.mylib.custom_func(q, k_cache, v_cache, k, v, cache_seqlens)
-        else:
-            y = torch.ops.mylib.gqa_custom(q, k_cache, v_cache, k, v, cache_seqlens, causal=True)
+        # for decoding and verification, use gqa_custom
+        y = self._attn(q, k_cache, v_cache, k, v, cache_seqlens)
+        # y = torch.ops.mylib.custom_func(q, k_cache, v_cache, k, v, cache_seqlens)
 
+        y = y.contiguous().view(bsz, seqlen, self.dim)
+
+        y = self.wo(y)
+        if self.process_group != None:
+            dist.all_reduce(y)
+        return y
+
+    def prefill(self, x: Tensor, freqs_cis: Tensor, cache_seqlens: Tensor) -> Tensor:
+        bsz, seqlen, _ = x.shape
+
+        kv_size = self.n_local_heads * self.head_dim
+        q, k, v = self.wqkv(x).split([self.dim, kv_size, kv_size], dim=-1)
+
+        q = q.view(bsz, seqlen, self.n_head, self.head_dim)
+        k = k.view(bsz, seqlen, self.n_local_heads, self.head_dim)
+        v = v.view(bsz, seqlen, self.n_local_heads, self.head_dim)
+
+        q = apply_rotary_emb(q, freqs_cis)
+        k = apply_rotary_emb(k, freqs_cis)
+
+        if self.kv_cache is not None:
+            k_cache, v_cache = self.kv_cache.k_cache, self.kv_cache.v_cache
+
+        # for prefill, use original impl
+        y = torch.ops.mylib.custom_func(q, k_cache, v_cache, k, v, cache_seqlens)
+        
         y = y.contiguous().view(bsz, seqlen, self.dim)
 
         y = self.wo(y)
