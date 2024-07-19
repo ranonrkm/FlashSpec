@@ -157,9 +157,7 @@ class TransformerBlock(nn.Module):
         self.attention_norm = RMSNorm(config.dim, config.norm_eps)
 
     def forward(self, x: Tensor, freqs_cis: Tensor, cache_seqlens: Tensor) -> Tensor:
-        # h = x  # removed attn
         h = x + self.attention(self.attention_norm(x), freqs_cis, cache_seqlens)
-        # out = h # remove ffn
         out = h + self.feed_forward(self.ffn_norm(h))
         return out
 
@@ -190,6 +188,7 @@ class Attention(nn.Module):
 
     def forward(self, x: Tensor, freqs_cis: Tensor, cache_seqlens: Tensor) -> Tensor:
         bsz, seqlen, _ = x.shape
+
         kv_size = self.n_local_heads * self.head_dim
         q, k, v = self.wqkv(x).split([self.dim, kv_size, kv_size], dim=-1)
 
@@ -197,16 +196,17 @@ class Attention(nn.Module):
         k = k.view(bsz, seqlen, self.n_local_heads, self.head_dim)
         v = v.view(bsz, seqlen, self.n_local_heads, self.head_dim)
 
-        # rotatry embeddings 
         q = apply_rotary_emb(q, freqs_cis)
         k = apply_rotary_emb(k, freqs_cis)
 
         if self.kv_cache is not None:
             k_cache, v_cache = self.kv_cache.k_cache, self.kv_cache.v_cache
 
-        y = torch.ops.mylib.custom_func(q, k_cache, v_cache, k, v, cache_seqlens, True) # flash attn
+        y = torch.ops.mylib.custom_func(q, k_cache, v_cache, k, v, cache_seqlens, True)
+
         y = y.contiguous().view(bsz, seqlen, self.dim)
-        y = self.wo(y) # output projection
+
+        y = self.wo(y)
         return y
 
 
