@@ -102,7 +102,9 @@ else:
 # Load dataset
 tokenizer = AutoTokenizer.from_pretrained(args.model_name)
 tokenizer.pad_token = tokenizer.eos_token
-dataset = convert_pg19_dataset(tokenizer=tokenizer, seq_len=args.prefix_len)
+repeats = 20
+no_runs = int(BATCH_SIZE*repeats/20)
+dataset = convert_pg19_dataset(tokenizer=tokenizer, seq_len=args.prefix_len, end=no_runs)
 dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=True)
 num_eval_steps = len(dataloader)
 
