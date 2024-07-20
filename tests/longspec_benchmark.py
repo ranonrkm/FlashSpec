@@ -69,7 +69,7 @@ target_dec_list = [args.gamma + 1]
 engine = LMBackend(dtype=DTYPE, device=DEVICE, dec_list=target_dec_list)
 engine.load_model(checkpoint_path, use_tp=use_tp, rank_group = args.rank_group, group=global_group)
 
-assert args.M + args.gamma + 1 <= engine.model.config.block_size, f"Model block_size is {engine.model.config.block_size}, but M+gamma+1 is {args.M + args.gamma + 1}"
+assert args.prefix_len + args.gen_len + args.gamma + 1 <= engine.model.config.block_size, f"Model block_size is {engine.model.config.block_size}, but M+gamma+1 is {args.M + args.gamma + 1}"
 vocab_size = engine.model.config.vocab_size
 
 if args.compile:
@@ -100,7 +100,7 @@ else:
     dist.barrier()
 
 # Load dataset
-tokenizer = AutoTokenizer.from_pretrained(model_name)
+tokenizer = AutoTokenizer.from_pretrained(args.model_name)
 tokenizer.pad_token = tokenizer.eos_token
 dataset = convert_pg19_dataset(tokenizer=tokenizer, seq_len=args.prefix_len)
 dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=True)
