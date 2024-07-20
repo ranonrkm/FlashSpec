@@ -91,4 +91,3 @@ class LMBackend_Draft:
             b.attention.kv_cache.v_cache.zero_()
 
     
-

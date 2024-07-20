@@ -7,6 +7,8 @@ from torch import Tensor
 from torch.nn import functional as F
 import torch.distributed as dist
 
+from FlashSpec.Engine.utils import custom_func, custom_func_2
+
 
 def find_multiple(n: int, k: int) -> int:
     if n % k == 0:
@@ -46,6 +48,7 @@ class ModelArgs:
         if len(config) > 1:
             config.sort(key=len, reverse=True)
             assert len(config[0]) != len(config[1]), name # make sure only one 'best' match
+        print("draft model: ", config[0])
         return cls(**transformer_configs[config[0]])
 
 
@@ -67,6 +70,7 @@ transformer_configs = {
     "llama-160m": dict(block_size=2048, n_layer=12, n_head=12, n_local_heads=12, dim=768, intermediate_size=3072, vocab_size=32000),
     "1.3b": dict(block_size =2048, n_layer=24, n_head=16, n_local_heads=16, dim=2048, intermediate_size=5504, vocab_size=32000),
     "tinyllama": dict(block_size =2048, n_layer=22, n_head=32, n_local_heads=4, dim=2048, intermediate_size=5632, vocab_size=32000),
+    "Llama-3-8B-Instruct-Gradient-1048k": dict(block_size=1048576, n_layer=32, n_head=32, n_local_heads=8, dim=4096, intermediate_size=14336, vocab_size=128256, rope_base=3580165449),
 }
 
 class KVCache(nn.Module):
@@ -187,6 +191,11 @@ class Attention(nn.Module):
         self.dim = config.dim
         self._register_load_state_dict_pre_hook(self.load_hook)
 
+        if self.n_head == self.n_local_heads:
+            self._attn = torch.ops.mylib.custom_func
+        else:
+            self._attn = torch.ops.mylib.gqa_custom
+
     def load_hook(self, state_dict, prefix, *args):
         if prefix + "wq.weight" in state_dict:
             wq = state_dict.pop(prefix + "wq.weight")
@@ -209,7 +218,8 @@ class Attention(nn.Module):
 
         k_cache, v_cache = self.kv_cache.k_cache, self.kv_cache.v_cache
 
-        y = torch.ops.mylib.custom_func(q, k_cache, v_cache, k, v, cache_seqlens)
+        # y = torch.ops.mylib.custom_func(q, k_cache, v_cache, k, v, cache_seqlens)
+        y = self._attn(q, k_cache, v_cache, k, v, cache_seqlens)
 
         y = y.contiguous().view(bsz, seqlen, self.dim)
 
