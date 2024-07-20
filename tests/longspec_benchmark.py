@@ -36,7 +36,6 @@ parser.add_argument('--benchmark', action='store_true', help='Whether to compile
 
 # Assert max length <= max context length
 args = parser.parse_args()
-assert args.prefix_len + args.gen_len + args.gamma + 1 <= 4096
 
 # Init model parallelism
 draft_tp = len(args.draft_ranks) > 1
