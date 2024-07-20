@@ -69,7 +69,7 @@ target_dec_list = [args.gamma + 1]
 engine = LMBackend(dtype=DTYPE, device=DEVICE, dec_list=target_dec_list)
 engine.load_model(checkpoint_path, use_tp=use_tp, rank_group = args.rank_group, group=global_group)
 
-assert args.prefix_len + args.gen_len + args.gamma + 1 <= engine.model.config.block_size, f"Model block_size is {engine.model.config.block_size}, but M+gamma+1 is {args.M + args.gamma + 1}"
+assert args.prefix_len + args.gen_len + args.gamma + 1 <= engine.model.config.block_size, f"Model block_size is {engine.model.config.block_size}, but M+gamma+1 is {args.prefix_len + args.gen_len + args.gamma + 1}"
 vocab_size = engine.model.config.vocab_size
 
 if args.compile:
@@ -115,8 +115,11 @@ if benchmark:
     draft_time = 0.0
     target_time = 0.0
     verify_loop = 0.0
+accepted_tokens = 0.0
+candidate_tokens = 0.0
 
-for step, batch in tqdm(enumerate(dataloader), total=num_eval_steps):
+pbar = tqdm(enumerate(dataloader), total=num_eval_steps)
+for step, batch in pbar:
     input_ids = batch[0].to(DEVICE)
     terminal = False
     tokens_buffer= torch.zeros((BATCH_SIZE, args.gamma+1), device=DEVICE).long()
@@ -197,6 +200,7 @@ for step, batch in tqdm(enumerate(dataloader), total=num_eval_steps):
         bonus_tokens = torch.full((BATCH_SIZE, 1), 0, device=DEVICE).long()
         accept_nums = torch.full((BATCH_SIZE, 1), 1, device=DEVICE).long()
         accept_flags = torch.full((BATCH_SIZE, 1), True, device=DEVICE)
+        condition = torch.zeros((BATCH_SIZE, 1), device=DEVICE).bool()
         for pos in range(args.gamma):
             target_token = target_tokens[:, pos]
             draft_token = tokens_buffer[:, pos+1]
@@ -205,6 +209,8 @@ for step, batch in tqdm(enumerate(dataloader), total=num_eval_steps):
             accept_flags = accept_flags & flag_accept
             # Only increase accept_nums where accept_flags are still True
             accept_nums += accept_flags.int()
+            accepted_tokens += (accept_flags & ~condition).int().sum().item()
+            candidate_tokens += (~condition).int().sum().item()
             # Wether or not terminate
             condition = ((draft_token.unsqueeze(1) == 0) | (draft_token.unsqueeze(1) == 2)) & accept_flags
             if condition.any():
@@ -289,3 +295,5 @@ for step, batch in tqdm(enumerate(dataloader), total=num_eval_steps):
             verify_loop = 0.0
     if use_tp:
         dist.barrier()
+
+    pbar.set_postfix(acceptance_rate=accepted_tokens/candidate_tokens)
