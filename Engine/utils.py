@@ -51,28 +51,27 @@ def gqa_custom(q, k_cache, v_cache, k, v, cache_seqlens):
     rep = H_q // H_k
     q_reshaped = q.view(B, T, H_k, rep, D).transpose(2, 3).contiguous().view(B, T*rep, H_k, D).contiguous()
     y_past, lse_past = flash_attn_with_kvcache(q_reshaped, k_cache, v_cache, None, None, cache_seqlens=cache_seqlens, causal=False, return_softmax_lse=True)
-    # y_new, lse_new = flash_attn_with_kvcache(q, k, v, None, None, None, causal=True, return_softmax_lse=True)     
+    y_new, lse_new = flash_attn_with_kvcache(q, k, v, None, None, None, causal=True, return_softmax_lse=True)     
     y_past = y_past.view(B, T, rep, H_k, D).transpose(2, 3).contiguous().view(B, T, H_q, D)
     # # lse_past: B, H, T*r -> B, T*r, H -> B, T, r, H -> B, T, H, r -> B, T, H*r, 1
     # # lse_past = lse_past.transpose(1, 2).reshape(B, T, rep, H_k).transpose(2, 3).contiguous().view(B, T, H_q, 1)
-    # lse_past = rearrange(lse_past, 'b h (t r) -> b t (h r) 1', r=rep).contiguous()
-    # lse_past = lse_past.to(y_past.dtype)
-    # lse_new = lse_new.unsqueeze(-1).transpose(1, 2).to(y_new.dtype)
+    lse_past = rearrange(lse_past, 'b h (t r) -> b t (h r) 1', r=rep).contiguous()
+    lse_past = lse_past.to(y_past.dtype)
+    lse_new = lse_new.unsqueeze(-1).transpose(1, 2).to(y_new.dtype)
     
-    # sumexp_past = torch.exp(lse_past.float())
-    # sumexp_new = torch.exp(lse_new.float())
+    sumexp_past = torch.exp(lse_past.float())
+    sumexp_new = torch.exp(lse_new.float())
 
-    # sumexp_total = sumexp_past + sumexp_new
-    # y = (y_past * sumexp_past + y_new * sumexp_new) / sumexp_total
+    sumexp_total = sumexp_past + sumexp_new
+    y = (y_past * sumexp_past + y_new * sumexp_new) / sumexp_total
 
     # # insert new k and v to k_cache and v_cache, starting from cache_seqlens position
-    # insert_indices = cache_seqlens.unsqueeze(-1) + torch.arange(T, device=cache_seqlens.device).unsqueeze(0)
-    # insert_indices = insert_indices[..., None, None].expand(-1, -1, H_k, D)
-    # k_cache.scatter_(1, insert_indices, k)
-    # v_cache.scatter_(1, insert_indices, v)   
+    insert_indices = cache_seqlens.unsqueeze(-1) + torch.arange(T, device=cache_seqlens.device).unsqueeze(0)
+    insert_indices = insert_indices[..., None, None].expand(-1, -1, H_k, D)
+    k_cache.scatter_(1, insert_indices, k)
+    v_cache.scatter_(1, insert_indices, v)   
 
-    # return y.to(q.dtype)
-    return y_past.to(q.dtype)
+    return y.to(q.dtype)
 
 
 def get_sampling_logits(logits :torch.Tensor, top_p:float, T: float, replicate = False):
