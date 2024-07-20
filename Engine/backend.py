@@ -10,7 +10,7 @@ class LMBackend:
         for dec_len in dec_list:
             if dec_len == 0: continue
             self.model_forward[dec_len] = lambda model, x, input_pos, cache_seqlens: model(x, input_pos, cache_seqlens)
-        self.prefill = lambda model, x, input_pos, cache_seqlens: model(x, input_pos, cache_seqlens)
+        self.prefill = lambda model, x, input_pos, cache_seqlens: model.prefill(x, input_pos, cache_seqlens)
         self.cachelens = None
 
     def load_model(self, checkpoints: str, use_tp: bool, rank_group=None, group = None):
@@ -95,4 +95,3 @@ class LMBackend:
             
 
     
-
