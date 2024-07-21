@@ -3,6 +3,7 @@ sys.path.append("..")
 import torch
 import torch._dynamo.config
 import torch._inductor.config
+from flash_attn import flash_attn_with_kvcache
 from Engine.utils import custom_func, gqa_custom
 import argparse 
 import time
@@ -26,9 +27,9 @@ print(f"Running benchmark for B={B}, P1={P1}, P2={P2}, H={H}, H_q={H_q}, H_k={H_
 for i in [1, 2, 4, 6]:
 
     # compile custom func and gqa_custom
-    mqa_attn = torch.ops.mylib.custom_func
+    flash_attn_with_kvcache = torch.ops.mylib.custom_func
     gqa_attn = torch.ops.mylib.gqa_custom
-    # mqa_attn = torch.compile(mqa_attn, mode="reduce-overhead", fullgraph=True)
+    # flash_attn_with_kvcache = torch.compile(flash_attn_with_kvcache, mode="reduce-overhead", fullgraph=True)
     # gqa_attn = torch.compile(gqa_attn, mode="reduce-overhead", fullgraph=True)
 
     with torch.device('cuda'):
@@ -42,7 +43,7 @@ for i in [1, 2, 4, 6]:
 
     # warm up
     for _ in range(100):
-        mqa_attn(q1, K1, V1, k1, v1, seqlen1)
+        flash_attn_with_kvcache(q1, K1, V1, k=None, v=None, cache_seqlens=None)
 
     prof = torch.profiler.profile()
 
@@ -51,7 +52,7 @@ for i in [1, 2, 4, 6]:
 
     with prof:
         for _ in range(1000):
-            mqa_attn(q1, K1, V1, k1, v1, seqlen1)
+            flash_attn_with_kvcache(q1, K1, V1, k=None, v=None, cache_seqlens=None)
 
     torch.cuda.synchronize()
     t2 = time.perf_counter()
@@ -63,36 +64,36 @@ for i in [1, 2, 4, 6]:
     del q1, K1, V1, k1, v1, seqlen1
     torch.cuda.empty_cache()
 
-    with torch.device('cuda'):
-        q2 = torch.rand(B, i, H_q, D).half()
-        K2 = torch.rand(B, P2+i, H_k, D).half()
-        V2 = torch.rand(B, P2+i, H_k, D).half()
-        k2 = torch.rand(B, i, H_k, D).half()
-        v2 = torch.rand(B, i, H_k, D).half()
-        seqlen2 = torch.full((B,), P2, dtype=torch.int32)
+    # with torch.device('cuda'):
+    #     q2 = torch.rand(B, i, H_q, D).half()
+    #     K2 = torch.rand(B, P2+i, H_k, D).half()
+    #     V2 = torch.rand(B, P2+i, H_k, D).half()
+    #     k2 = torch.rand(B, i, H_k, D).half()
+    #     v2 = torch.rand(B, i, H_k, D).half()
+    #     seqlen2 = torch.full((B,), P2, dtype=torch.int32)
 
-    # warmup
-    for _ in range(100):
-        gqa_attn(q2, K2, V2, k2, v2, seqlen2)
+    # # warmup
+    # for _ in range(100):
+    #     gqa_attn(q2, K2, V2, k=None, v=None, cache_seqlens=None)
 
-    prof = torch.profiler.profile()
+    # prof = torch.profiler.profile()
 
-    torch.cuda.synchronize()
-    t1 = time.perf_counter()
+    # torch.cuda.synchronize()
+    # t1 = time.perf_counter()
 
-    with prof:
-        for _ in range(1000):
-            gqa_attn(q2, K2, V2, k2, v2, seqlen2)
+    # with prof:
+    #     for _ in range(1000):
+    #         gqa_attn(q2, K2, V2, k=None, v=None, cache_seqlens=None)
 
-    torch.cuda.synchronize()
-    t2 = time.perf_counter()
+    # torch.cuda.synchronize()
+    # t2 = time.perf_counter()
 
-    print(f"Avg time taken for gqa_custom: {t2 - t1:.3f} ms")
+    # print(f"Avg time taken for gqa_custom: {t2 - t1:.3f} ms")
 
-    prof.export_chrome_trace(f"gqa_16k_Hq32_Hk8_B{args.B}_dec{i}.json")
+    # prof.export_chrome_trace(f"gqa_16k_Hq32_Hk8_B{args.B}_dec{i}.json")
 
-    del q2, K2, V2, k2, v2, seqlen2
-    torch.cuda.empty_cache()
+    # del q2, K2, V2, k2, v2, seqlen2
+    # torch.cuda.empty_cache()
 
     with torch.device('cuda'):
         q3 = torch.rand(B, i*rep, H_k, D, dtype=torch.float16)
@@ -102,7 +103,7 @@ for i in [1, 2, 4, 6]:
 
     # warm up
     for _ in range(100):
-        mqa_attn(q3, K3, V3, k=None, v=None, cache_seqlens=None)
+        flash_attn_with_kvcache(q3, K3, V3, k=None, v=None, cache_seqlens=None)
 
     prof = torch.profiler.profile()
 
@@ -111,7 +112,7 @@ for i in [1, 2, 4, 6]:
 
     with prof:
         for _ in range(1000):
-            mqa_attn(q3, K3, V3, k=None, v=None, cache_seqlens=None)
+            flash_attn_with_kvcache(q3, K3, V3, k=None, v=None, cache_seqlens=None)
 
     torch.cuda.synchronize()
     t2 = time.perf_counter()
