@@ -1,5 +1,6 @@
 import time
 import torch
+import os
 import sys
 sys.path.append("..")
 from pathlib import Path
@@ -53,6 +54,8 @@ if use_tp:
     if rank != args.rank_group[0]:
         print = lambda *args, **kwargs: None
 
+print(f"Model name: {model_name}")
+
 setup_seed(args.seed)
 print(f"Using device={DEVICE}")
 MAX_LEN_TARGET = args.prefix_len + args.gen_len + args.gamma
@@ -62,7 +65,8 @@ BATCH_SIZE = args.B
 benchmark = args.benchmark
 checkpoint_path = args.target
 draft_checkpoint_path = args.model
-
+prefill = args.P
+end_step = args.end
 target_dec_list = [args.gamma + 1]
 
 # Load target model
@@ -106,7 +110,11 @@ repeats = 20
 no_runs = int(BATCH_SIZE*repeats/20)
 dataset = convert_pg19_dataset(tokenizer=tokenizer, seq_len=args.prefix_len, end=no_runs)
 dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=True)
-num_eval_steps = len(dataloader)
+try:
+    num_eval_steps = min(len(dataloader), end_step)
+except:
+    num_eval_steps = end_step
+print(f"Total number of steps: {num_eval_steps}")
 
 total_time = 0.0
 num_gen_tokens = 0
@@ -161,7 +169,8 @@ for step, batch in pbar:
                         tokens_buffer[:,i+1:i+2] = next_tokens.gather(1, cachelens_update.view(-1,1) - 1)
                         next_double = False
                     else:
-                        tokens_buffer[:,i+1:i+2] = draft_sample[1](draft.inference(tokens_buffer[:, i].view(-1,1)))
+                        draft_logits = draft.inference(tokens_buffer[:, i].view(-1,1))
+                        tokens_buffer[:,i+1:i+2] = draft_sample[1](draft_logits)
                     continue
                 tokens_buffer[:,i+1:i+2] = draft_sample[1](draft.inference(tokens_buffer[:, i].view(-1,1)))
         else:
@@ -216,7 +225,7 @@ for step, batch in pbar:
             if condition.any():
                 terminal = True
             accept_flags = accept_flags & ~condition
-        
+
         # Rollback the memory length
         engine.cachelens = engine.cachelens - args.gamma - 1
 

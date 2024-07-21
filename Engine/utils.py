@@ -95,7 +95,7 @@ def get_sampling_logits(logits :torch.Tensor, top_p:float, T: float, replicate =
             logits = logits.reshape(batch_size, seq_len, voc_size)
     return logits
 
-def sample(logits, top_p, T):
+def sample(logits, top_p, T, vocab_size=32000):
     shape = logits.shape
     if len(shape)==3:
         batch_size, seq_len, _ = logits.size()
@@ -104,7 +104,7 @@ def sample(logits, top_p, T):
         seq_len = 1
     logits = get_sampling_logits(logits=logits, top_p=top_p, T=T, replicate=True)
     logits = softmax(logits / T, dim=-1)
-    next_tokens = logits.view(-1, 32000).multinomial(num_samples=1).view(batch_size, seq_len)
+    next_tokens = logits.view(-1, vocab_size).multinomial(num_samples=1).view(batch_size, seq_len)
     return next_tokens
 
 def cg_get_sampling_logits(logits :torch.Tensor, top_p:float, T: float):
@@ -122,17 +122,18 @@ def cg_get_sampling_logits(logits :torch.Tensor, top_p:float, T: float):
     logits = logits.reshape(batch_size, seq_len, voc_size)
     return logits
 
-def cg_sample(logits, top_p, T):
+def cg_sample(logits, top_p, T, vocab_size=32000):
     batch_size, seq_len, _ = logits.size()
     logits = get_sampling_logits(logits=logits, top_p=top_p, T=T, replicate=True)
     logits = softmax(logits / T, dim=-1)
-    next_tokens = logits.view(-1, 32000).multinomial(num_samples=1).view(batch_size, seq_len)
+    next_tokens = logits.view(-1, vocab_size).multinomial(num_samples=1).view(batch_size, seq_len)
     return next_tokens
 
 def cuda_graph_for_target_sample(
                 device="cuda:0", dtype=torch.bfloat16, 
                 dim=32000, n_warmups=3, mempool=None,
-                idx_len = 3, batch_size=1, top_p = 0.9, T = 0.6):
+                idx_len = 3, batch_size=1, top_p = 0.9, T = 0.6, 
+                vocab_size=32000):
     
     static_sampling_logits = torch.full((batch_size, idx_len, dim), 1, dtype=dtype, device=device)
     s = torch.cuda.Stream()
@@ -141,7 +142,8 @@ def cuda_graph_for_target_sample(
         for _ in range(n_warmups):
             static_tokens = cg_sample(
                  static_sampling_logits,
-                 top_p=top_p, T=T
+                 top_p=top_p, T=T,
+                 vocab_size=vocab_size
             )
         s.synchronize()
     torch.cuda.current_stream().wait_stream(s)
@@ -150,7 +152,8 @@ def cuda_graph_for_target_sample(
     with torch.cuda.graph(graph, pool=mempool):
         static_tokens = cg_sample(
                  static_sampling_logits,
-                 top_p=top_p, T=T
+                 top_p=top_p, T=T,
+                 vocab_size=vocab_size
             )
     def run(target_logits, top_p=None, T=None):
         static_sampling_logits.copy_(target_logits)
