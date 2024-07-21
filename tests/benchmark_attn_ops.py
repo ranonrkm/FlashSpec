@@ -30,7 +30,7 @@ for i in [1, 2, 4, 6]:
     mqa_attn = torch.ops.mylib.custom_func
     gqa_attn = torch.ops.mylib.gqa_custom
     mqa_attn = torch.compile(mqa_attn, mode="reduce-overhead", fullgraph=True)
-    # gqa_attn = torch.compile(gqa_attn, mode="reduce-overhead", fullgraph=True)
+    gqa_attn = torch.compile(gqa_attn, mode="reduce-overhead", fullgraph=True)
 
     with torch.device('cuda'):
         print(f"dec len: {i}")
@@ -64,36 +64,36 @@ for i in [1, 2, 4, 6]:
     del q1, K1, V1, k1, v1, seqlen1
     torch.cuda.empty_cache()
 
-    # with torch.device('cuda'):
-    #     q2 = torch.rand(B, i, H_q, D).half()
-    #     K2 = torch.rand(B, P2+i, H_k, D).half()
-    #     V2 = torch.rand(B, P2+i, H_k, D).half()
-    #     k2 = torch.rand(B, i, H_k, D).half()
-    #     v2 = torch.rand(B, i, H_k, D).half()
-    #     seqlen2 = torch.full((B,), P2, dtype=torch.int32)
+    with torch.device('cuda'):
+        q2 = torch.rand(B, i, H_q, D).half()
+        K2 = torch.rand(B, P2+i, H_k, D).half()
+        V2 = torch.rand(B, P2+i, H_k, D).half()
+        k2 = torch.rand(B, i, H_k, D).half()
+        v2 = torch.rand(B, i, H_k, D).half()
+        seqlen2 = torch.full((B,), P2, dtype=torch.int32)
 
-    # # warmup
-    # for _ in range(100):
-    #     gqa_attn(q2, K2, V2, k=None, v=None, cache_seqlens=None)
+    # warmup
+    for _ in range(100):
+        gqa_attn(q2, K2, V2, k=k2, v=v2, cache_seqlens=seqlen2)
 
-    # prof = torch.profiler.profile()
+    prof = torch.profiler.profile()
 
-    # torch.cuda.synchronize()
-    # t1 = time.perf_counter()
+    torch.cuda.synchronize()
+    t1 = time.perf_counter()
 
-    # with prof:
-    #     for _ in range(1000):
-    #         gqa_attn(q2, K2, V2, k=None, v=None, cache_seqlens=None)
+    with prof:
+        for _ in range(1000):
+            gqa_attn(q2, K2, V2, k=k2, v=v2, cache_seqlens=seqlen2)
 
-    # torch.cuda.synchronize()
-    # t2 = time.perf_counter()
+    torch.cuda.synchronize()
+    t2 = time.perf_counter()
 
-    # print(f"Avg time taken for gqa_custom: {t2 - t1:.3f} ms")
+    print(f"Avg time taken for gqa_custom: {t2 - t1:.3f} ms")
 
-    # prof.export_chrome_trace(f"gqa_16k_Hq32_Hk8_B{args.B}_dec{i}.json")
+    prof.export_chrome_trace(f"gqa_16k_Hq32_Hk8_B{args.B}_dec{i}.json")
 
-    # del q2, K2, V2, k2, v2, seqlen2
-    # torch.cuda.empty_cache()
+    del q2, K2, V2, k2, v2, seqlen2
+    torch.cuda.empty_cache()
 
     with torch.device('cuda'):
         q3 = torch.rand(B, i*rep, H_k, D, dtype=torch.float16)
