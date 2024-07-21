@@ -3,7 +3,7 @@ sys.path.append("..")
 import torch
 import torch._dynamo.config
 import torch._inductor.config
-from flash_attn import flash_attn_with_kvcache
+# from flash_attn import mqa_attn
 from Engine.utils import custom_func, gqa_custom
 import argparse 
 import time
@@ -27,9 +27,9 @@ print(f"Running benchmark for B={B}, P1={P1}, P2={P2}, H={H}, H_q={H_q}, H_k={H_
 for i in [1, 2, 4, 6]:
 
     # compile custom func and gqa_custom
-    flash_attn_with_kvcache = torch.ops.mylib.custom_func
+    mqa_attn = torch.ops.mylib.custom_func
     gqa_attn = torch.ops.mylib.gqa_custom
-    # flash_attn_with_kvcache = torch.compile(flash_attn_with_kvcache, mode="reduce-overhead", fullgraph=True)
+    mqa_attn = torch.compile(mqa_attn, mode="reduce-overhead", fullgraph=True)
     # gqa_attn = torch.compile(gqa_attn, mode="reduce-overhead", fullgraph=True)
 
     with torch.device('cuda'):
@@ -43,7 +43,7 @@ for i in [1, 2, 4, 6]:
 
     # warm up
     for _ in range(100):
-        flash_attn_with_kvcache(q1, K1, V1, k=None, v=None, cache_seqlens=None)
+        mqa_attn(q1, K1, V1, k=None, v=None, cache_seqlens=None)
 
     prof = torch.profiler.profile()
 
@@ -52,7 +52,7 @@ for i in [1, 2, 4, 6]:
 
     with prof:
         for _ in range(1000):
-            flash_attn_with_kvcache(q1, K1, V1, k=None, v=None, cache_seqlens=None)
+            mqa_attn(q1, K1, V1, k=None, v=None, cache_seqlens=None)
 
     torch.cuda.synchronize()
     t2 = time.perf_counter()
@@ -103,7 +103,7 @@ for i in [1, 2, 4, 6]:
 
     # warm up
     for _ in range(100):
-        flash_attn_with_kvcache(q3, K3, V3, k=None, v=None, cache_seqlens=None)
+        mqa_attn(q3, K3, V3, k=None, v=None, cache_seqlens=None)
 
     prof = torch.profiler.profile()
 
@@ -112,7 +112,7 @@ for i in [1, 2, 4, 6]:
 
     with prof:
         for _ in range(1000):
-            flash_attn_with_kvcache(q3, K3, V3, k=None, v=None, cache_seqlens=None)
+            mqa_attn(q3, K3, V3, k=None, v=None, cache_seqlens=None)
 
     torch.cuda.synchronize()
     t2 = time.perf_counter()
