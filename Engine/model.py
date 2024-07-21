@@ -6,7 +6,7 @@ import torch.nn as nn
 from torch import Tensor
 from torch.nn import functional as F
 import torch.distributed as dist
-
+import flashinfer
 from FlashSpec.Engine.utils import custom_func, gqa_custom
 
 def find_multiple(n: int, k: int) -> int:
@@ -74,9 +74,11 @@ transformer_configs = {
 class KVCache(nn.Module):
     def __init__(self, max_batch_size, max_seq_length, n_heads, head_dim, dtype=torch.bfloat16):
         super().__init__()
-        cache_shape = (max_batch_size, max_seq_length, n_heads, head_dim)
-        self.register_buffer('k_cache', torch.zeros(cache_shape, dtype=dtype))
-        self.register_buffer('v_cache', torch.zeros(cache_shape, dtype=dtype))
+        # cache_shape = (max_batch_size, max_seq_length, n_heads, head_dim)
+        # self.register_buffer('k_cache', torch.zeros(cache_shape, dtype=dtype))
+        # self.register_buffer('v_cache', torch.zeros(cache_shape, dtype=dtype))
+        cache_shape = (max_batch_size, 2, max_seq_length, n_heads, head_dim)
+        self.register_buffer('kv_cache', torch.zeros(cache_shape, dtype=dtype))
 
 class Transformer(nn.Module):
     def __init__(self, config: ModelArgs) -> None:
@@ -108,6 +110,7 @@ class Transformer(nn.Module):
             dtype = self.output.scales_and_zeros.dtype
         for b in self.layers:
             b.attention.kv_cache = KVCache(max_batch_size, max_seq_length, self.config.n_local_heads, head_dim, dtype)
+            b.attention.prepare_buffers(max_batch_size, max_seq_length)
 
         self.freqs_cis = precompute_freqs_cis(self.config.block_size, self.config.dim // self.config.n_head, self.config.rope_base, dtype)
 
@@ -175,10 +178,23 @@ class Attention(nn.Module):
         self.dim = config.dim
         self._register_load_state_dict_pre_hook(self.load_hook)
 
+        '''
         if self.n_head == self.n_local_heads:
             self._attn = torch.ops.mylib.custom_func
         else:
             self._attn = torch.ops.mylib.gqa_custom
+        '''
+
+    def prepare_buffers(self, max_batch_size, max_seq_length):
+        workspace_buffer = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device="cuda:0")
+        qo_indptr_buf = torch.empty(max_batch_size+1, dtype=torch.int32, device="cuda:0")
+        kv_indptr_buf = torch.empty(max_batch_size+1, dtype=torch.int32, device="cuda:0")
+
+        self.prefill_wrapper = flashinfer.BatchPrefillWithPagedKVCacheWrapper(
+            workspace_buffer, "NHD", use_cuda_graph=True,
+            qo_indptr_buf=qo_indptr_buf, kv_indptr_buf=kv_indptr_buf
+        )
+        self.page_size = max_seq_length
 
     def load_hook(self, state_dict, prefix, *args):
         if prefix + "wq.weight" in state_dict:
@@ -201,12 +217,40 @@ class Attention(nn.Module):
         k = apply_rotary_emb(k, freqs_cis)
 
         if self.kv_cache is not None:
-            k_cache, v_cache = self.kv_cache.k_cache, self.kv_cache.v_cache
+        #     k_cache, v_cache = self.kv_cache.k_cache, self.kv_cache.v_cache
+            kv_cache = self.kv_cache.kv_cache
 
         # for decoding and verification, use gqa_custom
-        y = self._attn(q, k_cache, v_cache, k, v, cache_seqlens)
+        # y = self._attn(q, k_cache, v_cache, k, v, cache_seqlens)
         # y = torch.ops.mylib.custom_func(q, k_cache, v_cache, k, v, cache_seqlens)
 
+        # insert k, v into kv_cache
+        insert_indices = cache_seqlens.unsqueeze(1) + torch.arange(seqlen, device=cache_seqlens.device).unsqueeze(0)
+        insert_indices = insert_indices[..., None, None].expand(-1, -1, self.n_local_heads, self.head_dim)
+        kv_cache[:, 0].scatter_(1, insert_indices, k)
+        kv_cache[:, 1].scatter_(1, insert_indices, v)
+
+        nnz_qo = bsz * seqlen
+        qo_indptr = torch.arange(0, nnz_qo, seqlen, device=q.device).int()
+        paged_kv_indices = torch.arange(bsz).int().to(q.device)
+        paged_kv_indptr = torch.arange(0, bsz+1).int().to(q.device)
+
+        # 1 <= paged_kv_last_page_len <= page_size
+        paged_kv_last_page_len = cache_seqlens
+
+        self.prefill_wrapper.begin_forward(
+            qo_indptr,
+            paged_kv_indptr,
+            paged_kv_indices,
+            paged_kv_last_page_len,
+            self.n_head,
+            self.n_local_heads,
+            self.head_dim,
+            self.page_size,
+        )
+        q = q.view(nnz_qo, self.n_head, self.head_dim).contiguous()
+        y = self.prefill_wrapper.forward(q, kv_cache, causal=True)
+            
         y = y.contiguous().view(bsz, seqlen, self.dim)
 
         y = self.wo(y)
@@ -228,11 +272,37 @@ class Attention(nn.Module):
         k = apply_rotary_emb(k, freqs_cis)
 
         if self.kv_cache is not None:
-            k_cache, v_cache = self.kv_cache.k_cache, self.kv_cache.v_cache
+            # k_cache, v_cache = self.kv_cache.k_cache, self.kv_cache.v_cache
+            kv_cache = self.kv_cache.kv_cache
 
         # for prefill, use original impl
-        y = torch.ops.mylib.custom_func(q, k_cache, v_cache, k, v, cache_seqlens)
-        
+        # y = torch.ops.mylib.custom_func(q, k_cache, v_cache, k, v, cache_seqlens)
+
+        # insert k, v into kv_cache
+        kv_cache[:, 0, cache_seqlens:cache_seqlens+seqlen] = k
+        kv_cache[:, 1, cache_seqlens:cache_seqlens+seqlen] = v
+
+        nnz_qo = bsz * seqlen
+        qo_indptr = torch.arange(0, nnz_qo, seqlen, device=q.device).int()
+        paged_kv_indices = torch.arange(bsz).int().to(q.device)
+        paged_kv_indptr = torch.arange(0, bsz+1).int().to(q.device)
+
+        # 1 <= paged_kv_last_page_len <= page_size
+        paged_kv_last_page_len = cache_seqlens + seqlen
+
+        self.prefill_wrapper.begin_forward(
+            qo_indptr,
+            paged_kv_indptr,
+            paged_kv_indices,
+            paged_kv_last_page_len,
+            self.n_head,
+            self.n_local_heads,
+            self.head_dim,
+            self.page_size,
+        )
+        q = q.view(nnz_qo, self.n_head, self.head_dim).contiguous()
+        y = self.prefill_wrapper.forward(q, kv_cache, causal=True)
+
         y = y.contiguous().view(bsz, seqlen, self.dim)
 
         y = self.wo(y)

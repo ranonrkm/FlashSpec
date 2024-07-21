@@ -90,9 +90,9 @@ class LMBackend:
     @torch.inference_mode()
     def clear_kv(self):
         for b in self.model.layers:
-            b.attention.kv_cache.k_cache.zero_()
-            b.attention.kv_cache.v_cache.zero_()
-            
+            # b.attention.kv_cache.k_cache.zero_()
+            # b.attention.kv_cache.v_cache.zero_()
+            b.attention.kv_cache.kv_cache.zero_()
 
     
 
