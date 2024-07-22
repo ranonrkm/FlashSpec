@@ -3,6 +3,7 @@ import numpy as np
 import random
 from torch.nn.functional import softmax
 from flash_attn import flash_attn_with_kvcache
+from einops import rearrange
 
 torch.library.define(
     "mylib::custom_func",
