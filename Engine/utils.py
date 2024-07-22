@@ -53,8 +53,6 @@ def gqa_custom_abstract(q, k_cache, v_cache, k, v, cache_seqlens):
 #     y_past, lse_past = flash_attn_with_kvcache(q_reshaped, k_cache, v_cache, None, None, cache_seqlens=cache_seqlens, causal=False, return_softmax_lse=True)
 #     y_new, lse_new = flash_attn_with_kvcache(q, k, v, None, None, None, causal=True, return_softmax_lse=True)     
 #     y_past = y_past.view(B, T, rep, H_k, D).transpose(2, 3).contiguous().view(B, T, H_q, D)
-#     # lse_past: B, H, T*r -> B, T*r, H -> B, T, r, H -> B, T, H, r -> B, T, H*r, 1
-#     # lse_past = lse_past.transpose(1, 2).reshape(B, T, rep, H_k).transpose(2, 3).contiguous().view(B, T, H_q, 1)
 #     lse_past = rearrange(lse_past, 'b h (t r) -> b t (h r) 1', r=rep).contiguous()
     
 #     lse_past = lse_past.to(y_past.dtype)
@@ -80,16 +78,20 @@ def gqa_custom(q, k_cache, v_cache, k, v, cache_seqlens):
     H_k = k.size(2)
     rep = H_q // H_k
     q_reshaped = q.view(B, T, H_k, rep, D).transpose(2, 3).contiguous().view(B, T*rep, H_k, D).contiguous()
-    k_new = torch.zeros(B, T*rep, H_k, D, device=q.device, dtype=q.dtype)
     v_new = torch.zeros(B, T*rep, H_k, D, device=q.device, dtype=q.dtype)
+    k_new = torch.zeros_like(v_new)
+    extra = torch.arange(rep, device=q.device, dtype=q.dtype).repeat(T)[None, None, :]  # 1, 1, T*rep
     insert_indices = torch.arange(0, T*rep, rep, device=q.device)[None, :, None, None].expand(B, -1, H_k, D)
     k_new.scatter_(1, insert_indices, k)
     v_new.scatter_(1, insert_indices, v)
-    # k_new = k.repeat(1, rep, 1, 1)
-    # v_new = v.repeat(1, rep, 1, 1)
-    y = flash_attn_with_kvcache(q_reshaped, k_cache, v_cache, k_new, v_new, cache_seqlens=cache_seqlens, causal=True)
+    y, lse = flash_attn_with_kvcache(q_reshaped, k_cache, v_cache, k_new, v_new, cache_seqlens=cache_seqlens, causal=True, return_softmax_lse=True)
+    
+    extra = extra.expand_as(lse)
+    correction = 1./ (1 - extra * torch.exp(-lse))
+    correction = correction.transpose(1, 2).unsqueeze(-1)
+    y = y * correction.to(y.dtype)
     y = y.view(B, T, rep, H_k, D).transpose(2, 3).contiguous().view(B, T, H_q, D)
-
+    
     # insert new k and v to k_cache and v_cache, starting from cache_seqlens position
     insert_indices = cache_seqlens.unsqueeze(-1) + torch.arange(T, device=cache_seqlens.device).unsqueeze(0)
     insert_indices = insert_indices[..., None, None].expand(-1, -1, H_k, D)
