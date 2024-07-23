@@ -50,7 +50,7 @@ def gqa_custom(q, k_cache, v_cache, k, v, cache_seqlens):
     H_k = k.size(2)
     rep = H_q // H_k
     q_reshaped = q.view(B, T, H_k, rep, D).transpose(2, 3).contiguous().view(B, T*rep, H_k, D).contiguous()
-    y_past, lse_past = flash_attn_with_kvcache(q_reshaped, k_cache, v_cache, None, None, cache_seqlens=cache_seqlens, causal=False, return_softmax_lse=True)
+    y_past, lse_past = flash_attn_with_kvcache(q_reshaped, k_cache, v_cache, None, None, cache_seqlens=cache_seqlens, causal=True, return_softmax_lse=True)
     y_new, lse_new = flash_attn_with_kvcache(q, k, v, None, None, None, causal=True, return_softmax_lse=True)     
     y_past = y_past.view(B, T, rep, H_k, D).transpose(2, 3).contiguous().view(B, T, H_q, D)
     lse_past = rearrange(lse_past, 'b h (t r) -> b t (h r) 1', r=rep).contiguous()
