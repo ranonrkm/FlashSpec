@@ -18,7 +18,7 @@ parser.add_argument('--P', type=int, default=128, help='prefix len')
 parser.add_argument('--T', type=int, default=1000, help='repeat times')
 parser.add_argument('--declen_list', nargs='+', type=int, help='Group of dec len')
 parser.add_argument('--rank_group', nargs='+', type=int, help='Group of ranks')
-parser.add_argument('--profile', type=Path, default=None, help='Profile path.')
+parser.add_argument('--profile', type=Path, default=Path("tests/profile.txt"), help='Profile path.')
 
 args = parser.parse_args()
 
@@ -71,10 +71,11 @@ for declen in dec_list:
             torch.cuda.synchronize()
             t2 = time.perf_counter()
     print("Batch Size:{}, Max Length :{}, Decode Length :{}, Prefix Length :{}, inference time:{}s".format(max_batch_size, max_seq_length, declen, prefix_len, (t2 - t1)/ T))
-    with prof:
-        llm.inference(input_ids=dec, benchmark=True)
-    if hasattr(prof, "export_chrome_trace"):
-            if use_tp:
-                prof.export_chrome_trace(f"{profile}_rank_{rank}.json")
-            else:
-                prof.export_chrome_trace(f"{profile}.json")
+    if declen == 4:
+        with prof:
+            llm.inference(input_ids=dec, benchmark=True)
+        if hasattr(prof, "export_chrome_trace"):
+                if use_tp:
+                    prof.export_chrome_trace(f"{profile}_rank_{rank}.json")
+                else:
+                    prof.export_chrome_trace(f"{profile}.json")
