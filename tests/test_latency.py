@@ -1,3 +1,4 @@
+import os
 import sys
 import time
 from pathlib import Path
@@ -6,6 +7,7 @@ import torch
 import torch._dynamo.config
 import torch._inductor.config
 import argparse
+import contextlib
 from FlashSpec.Engine.backend import LMBackend
 
 parser = argparse.ArgumentParser(description='Your CLI description.')
@@ -17,6 +19,8 @@ parser.add_argument('--P', type=int, default=128, help='prefix len')
 parser.add_argument('--T', type=int, default=1000, help='repeat times')
 parser.add_argument('--declen_list', nargs='+', type=int, help='Group of dec len')
 parser.add_argument('--rank_group', nargs='+', type=int, help='Group of ranks')
+parser.add_argument('--out_dir', type=str, default="results", help='Output directory')
+parser.add_argument('--profile', action='store_true', help='Whether to profile')
 args = parser.parse_args()
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -41,6 +45,10 @@ dec_list = args.declen_list
 warm_up = 10
 T = args.T
 
+use_tp = len(args.rank_group)>1
+os.makedirs(args.out_dir, exist_ok=True)
+profile = f"{args.out_dir}/P{prefix_len}_B{max_batch_size}"
+
 llm = LMBackend(dtype=precision, device=device, dec_list=dec_list)
 llm.load_model(checkpoint_path, use_tp=use_tp, rank_group=args.rank_group, group = global_group)
 if args.compile:
@@ -57,8 +65,19 @@ for declen in dec_list:
                 logits = llm.inference(input_ids=dec, benchmark=True)
             torch.cuda.synchronize()
             t1 = time.perf_counter()
-            for _ in range(T):
-                logits = llm.inference(input_ids=dec, benchmark=True)
+            for i in range(T):
+                if not profile or (i != T - 1) or (use_tp and rank != 0):
+                    prof = contextlib.nullcontext()
+                else:
+                    torch.profiler._utils._init_for_cuda_graphs()
+                    prof = torch.profiler.profile(profile_memory=False, with_stack=False, with_flops=False, with_modules=False)
+                with prof:
+                    logits = llm.inference(input_ids=dec, benchmark=True)
+                if hasattr(prof, "export_chrome_trace"):
+                    if use_tp:
+                        prof.export_chrome_trace(f"{profile}_{declen}_rank_{rank}.json")
+                    else:
+                        prof.export_chrome_trace(f"{profile}_{declen}.json")
             torch.cuda.synchronize()
             t2 = time.perf_counter()
     print("Batch Size:{}, Max Length :{}, Decode Length :{}, Prefix Length :{}, inference time:{}s".format(max_batch_size, max_seq_length, declen, prefix_len, (t2 - t1)/ T))
