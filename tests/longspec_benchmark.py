@@ -6,7 +6,7 @@ from pathlib import Path
 import torch.distributed as dist
 from FlashSpec.Engine.utils import setup_seed, cuda_graph_for_sampling_argmax_batch, sampling_argmax_batch
 from FlashSpec.Data.data_converter import convert_pg19_dataset
-from transformers import LlamaTokenizer, AutoTokenizer
+from transformers import AutoTokenizer
 from torch.utils.data.dataloader import DataLoader
 from tqdm import tqdm
 import argparse
@@ -36,6 +36,7 @@ parser.add_argument('--benchmark', action='store_true', help='Whether to compile
 
 # Assert max length <= max context length
 args = parser.parse_args()
+# assert args.prefix_len + args.gen_len + args.gamma + 1 <= 4096
 
 # Init model parallelism
 draft_tp = len(args.draft_ranks) > 1
@@ -102,9 +103,15 @@ else:
 # Load dataset
 tokenizer = AutoTokenizer.from_pretrained(args.model_name)
 tokenizer.pad_token = tokenizer.eos_token
+eot_1 = tokenizer.eos_token_id
+if tokenizer.unk_token_id is not None:
+    eot_2 = tokenizer.unk_token_id
+else:
+    eot_2 = tokenizer.encode("<|eot_id|>")[-1]
+print(f"eot_1: {eot_1}, eot_2: {eot_2}")
 repeats = 20
-no_runs = int(BATCH_SIZE*repeats/20)
-dataset = convert_pg19_dataset(tokenizer=tokenizer, seq_len=args.prefix_len, end=no_runs)
+no_runs = int(BATCH_SIZE*repeats)
+dataset = convert_pg19_dataset(tokenizer=tokenizer, seq_len=args.prefix_len) #, end=no_runs)
 dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=True)
 num_eval_steps = len(dataloader)
 
@@ -115,11 +122,8 @@ if benchmark:
     draft_time = 0.0
     target_time = 0.0
     verify_loop = 0.0
-accepted_tokens = 0.0
-candidate_tokens = 0.0
 
-pbar = tqdm(enumerate(dataloader), total=num_eval_steps)
-for step, batch in pbar:
+for step, batch in tqdm(enumerate(dataloader), total=num_eval_steps):
     input_ids = batch[0].to(DEVICE)
     terminal = False
     tokens_buffer= torch.zeros((BATCH_SIZE, args.gamma+1), device=DEVICE).long()
@@ -200,7 +204,6 @@ for step, batch in pbar:
         bonus_tokens = torch.full((BATCH_SIZE, 1), 0, device=DEVICE).long()
         accept_nums = torch.full((BATCH_SIZE, 1), 1, device=DEVICE).long()
         accept_flags = torch.full((BATCH_SIZE, 1), True, device=DEVICE)
-        condition = torch.zeros((BATCH_SIZE, 1), device=DEVICE).bool()
         for pos in range(args.gamma):
             target_token = target_tokens[:, pos]
             draft_token = tokens_buffer[:, pos+1]
@@ -209,10 +212,8 @@ for step, batch in pbar:
             accept_flags = accept_flags & flag_accept
             # Only increase accept_nums where accept_flags are still True
             accept_nums += accept_flags.int()
-            accepted_tokens += (accept_flags & ~condition).int().sum().item()   # edit: ranajoy
-            candidate_tokens += (~condition).int().sum().item()                 # edit: ranajoy
             # Wether or not terminate
-            condition = ((draft_token.unsqueeze(1) == 0) | (draft_token.unsqueeze(1) == 2)) & accept_flags
+            condition = ((draft_token.unsqueeze(1) == eot_1) | (draft_token.unsqueeze(1) == eot_2)) & accept_flags
             if condition.any():
                 terminal = True
             accept_flags = accept_flags & ~condition
@@ -278,14 +279,14 @@ for step, batch in pbar:
     torch.cuda.synchronize()
     end=time.perf_counter()
     total_time += end-start
-    num_gen_tokens += (num_nodes.sum() - input_ids.shape[1]*BATCH_SIZE)
+    num_gen_tokens += (num_nodes.sum() - (input_ids.shape[1]+1)*BATCH_SIZE)
     if args.printoutput:
         for i in range(BATCH_SIZE):
             print(tokenizer.decode(output[i, args.prefix_len:num_nodes[i]]))
     print("total time :{:.5f}s, time per iter :{:.5f}s, decoding step: {}, large model step: {}".format(total_time, total_time / target_steps, num_gen_tokens, target_steps))
     if benchmark:
         print("target time :{:.5f}s, draft time :{:.5f}s, verify loop : {}, avg generate len per sentence: {}".format(target_time/target_steps, draft_time / target_steps, verify_loop/target_steps, num_gen_tokens/target_steps/BATCH_SIZE))
-    if step < 10:
+    if step < 2:
         total_time = 0.0
         num_gen_tokens = 0
         target_steps = 0
@@ -295,5 +296,3 @@ for step, batch in pbar:
             verify_loop = 0.0
     if use_tp:
         dist.barrier()
-
-    pbar.set_postfix(acceptance_rate=accepted_tokens/candidate_tokens)
