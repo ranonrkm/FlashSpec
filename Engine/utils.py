@@ -50,7 +50,7 @@ def gqa_custom_abstract(q, k_cache, v_cache, k, v, cache_seqlens):
 #     H_k = k.size(2)
 #     rep = H_q // H_k
 #     q_reshaped = q.view(B, T, H_k, rep, D).transpose(2, 3).contiguous().view(B, T*rep, H_k, D).contiguous()
-#     y_past, lse_past = flash_attn_with_kvcache(q_reshaped, k_cache, v_cache, k, v, cache_seqlens=cache_seqlens, causal=True, return_softmax_lse=True)
+#     y_past, lse_past = flash_attn_with_kvcache(q_reshaped, k_cache, v_cache, None, None, cache_seqlens=cache_seqlens, causal=True, return_softmax_lse=True)
 #     y_new, lse_new = flash_attn_with_kvcache(q, k, v, None, None, None, causal=True, return_softmax_lse=True)     
 #     y_past = y_past.view(B, T, rep, H_k, D).transpose(2, 3).contiguous().view(B, T, H_q, D)
 #     lse_past = rearrange(lse_past, 'b h (t r) -> b t (h r) 1', r=rep).contiguous()
@@ -63,7 +63,7 @@ def gqa_custom_abstract(q, k_cache, v_cache, k, v, cache_seqlens):
 
 #     sumexp_total = sumexp_past + sumexp_new
 #     y = (y_past * sumexp_past + y_new * sumexp_new) / sumexp_total
-
+    
 #     # insert new k and v to k_cache and v_cache, starting from cache_seqlens position
 #     insert_indices = cache_seqlens.unsqueeze(-1) + torch.arange(T, device=cache_seqlens.device).unsqueeze(0)
 #     insert_indices = insert_indices[..., None, None].expand(-1, -1, H_k, D)
@@ -80,10 +80,16 @@ def gqa_custom(q, k_cache, v_cache, k, v, cache_seqlens):
     q_reshaped = q.view(B, T, H_k, rep, D).transpose(2, 3).contiguous().view(B, T*rep, H_k, D).contiguous()
     v_new = torch.zeros(B, T*rep, H_k, D, device=q.device, dtype=q.dtype)
     k_new = torch.zeros_like(v_new)
-    extra = torch.arange(rep, device=q.device, dtype=q.dtype).repeat(T)[None, None, :]  # 1, 1, T*rep
+    
+    # the extra 1's added to the partition functions
+    # they are of the pattern [0, 1, 2, ..., rep-1, rep-1, rep, rep+1, ..., 2*rep-1, 2*rep-1, 2*rep, ...]
+    offset = torch.ones(rep, device=q.device, dtype=q.dtype)
+    offset[0].zero_()
+    extra = torch.cumsum(offset.repeat(T), dim=0)[None, None, :]
     insert_indices = torch.arange(0, T*rep, rep, device=q.device)[None, :, None, None].expand(B, -1, H_k, D)
     k_new.scatter_(1, insert_indices, k)
     v_new.scatter_(1, insert_indices, v)
+    
     y, lse = flash_attn_with_kvcache(q_reshaped, k_cache, v_cache, k_new, v_new, cache_seqlens=cache_seqlens, causal=True, return_softmax_lse=True)
     
     extra = extra.expand_as(lse)
