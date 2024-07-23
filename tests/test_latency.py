@@ -74,9 +74,9 @@ for declen in dec_list:
                     logits = llm.inference(input_ids=dec, benchmark=True)
                 if hasattr(prof, "export_chrome_trace"):
                     if use_tp:
-                        prof.export_chrome_trace(f"{profile}_rank_{rank}.json")
+                        prof.export_chrome_trace(f"{profile}_{declen}_rank_{rank}.json")
                     else:
-                        prof.export_chrome_trace(f"{profile}.json")
+                        prof.export_chrome_trace(f"{profile}_{declen}.json")
             torch.cuda.synchronize()
             t2 = time.perf_counter()
     print("Batch Size:{}, Max Length :{}, Decode Length :{}, Prefix Length :{}, inference time:{}s".format(max_batch_size, max_seq_length, declen, prefix_len, (t2 - t1)/ T))
