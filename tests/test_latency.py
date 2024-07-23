@@ -20,6 +20,7 @@ parser.add_argument('--T', type=int, default=1000, help='repeat times')
 parser.add_argument('--declen_list', nargs='+', type=int, help='Group of dec len')
 parser.add_argument('--rank_group', nargs='+', type=int, help='Group of ranks')
 parser.add_argument('--out_dir', type=str, default="results", help='Output directory')
+parser.add_argument('--profile', action='store_true', help='Whether to profile')
 args = parser.parse_args()
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -65,7 +66,7 @@ for declen in dec_list:
             torch.cuda.synchronize()
             t1 = time.perf_counter()
             for i in range(T):
-                if (i != T - 1) or (use_tp and rank != 0):
+                if not profile or (i != T - 1) or (use_tp and rank != 0):
                     prof = contextlib.nullcontext()
                 else:
                     torch.profiler._utils._init_for_cuda_graphs()
