@@ -127,7 +127,7 @@ for step, batch in tqdm(enumerate(dataloader), total=num_eval_steps):
     input_ids = batch[0].to(DEVICE)
     terminal = False
     tokens_buffer= torch.zeros((BATCH_SIZE, args.gamma+1), device=DEVICE).long()
-    output = torch.zeros(BATCH_SIZE, args.prefix_len + args.gen_len + 1, device=DEVICE).long()
+    output = torch.zeros(BATCH_SIZE, args.prefix_len + args.gen_len + args.gamma + 1, device=DEVICE).long()
     output[:, :input_ids.shape[1]] = input_ids
     num_nodes = torch.zeros(BATCH_SIZE,device=DEVICE).long()
     num_nodes += input_ids.shape[1]
@@ -286,7 +286,7 @@ for step, batch in tqdm(enumerate(dataloader), total=num_eval_steps):
     print("total time :{:.5f}s, time per iter :{:.5f}s, decoding step: {}, large model step: {}".format(total_time, total_time / target_steps, num_gen_tokens, target_steps))
     if benchmark:
         print("target time :{:.5f}s, draft time :{:.5f}s, verify loop : {}, avg generate len per sentence: {}".format(target_time/target_steps, draft_time / target_steps, verify_loop/target_steps, num_gen_tokens/target_steps/BATCH_SIZE))
-    if step < 10:
+    if step < 3:   # TODO: revert to 10?
         total_time = 0.0
         num_gen_tokens = 0
         target_steps = 0
