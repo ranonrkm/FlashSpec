@@ -6,7 +6,7 @@ import torch.nn as nn
 from torch import Tensor
 from torch.nn import functional as F
 import torch.distributed as dist
-
+import math 
 from FlashSpec.Engine.utils import custom_func, custom_func_2
 
 
@@ -27,6 +27,11 @@ class ModelArgs:
     head_dim: int = 64
     rope_base: float = 10000
     norm_eps: float = 1e-5
+    scaling_factor:float = 1.0
+    # llama 3.1 with high_freq_factor and low_freq_factor
+    low_freq_factor: int = None # added new
+    high_freq_factor: int = None  # added new
+    original_max_position_embeddings: int = None   # added new
 
     def __post_init__(self):
         if self.n_local_heads == -1:
@@ -71,6 +76,11 @@ transformer_configs = {
     "1.3b": dict(block_size =2048, n_layer=24, n_head=16, n_local_heads=16, dim=2048, intermediate_size=5504, vocab_size=32000),
     "tinyllama": dict(block_size =2048, n_layer=22, n_head=32, n_local_heads=4, dim=2048, intermediate_size=5632, vocab_size=32000),
     "Llama-3-8B-Instruct-Gradient-1048k": dict(block_size=1048576, n_layer=32, n_head=32, n_local_heads=8, dim=4096, intermediate_size=14336, vocab_size=128256, rope_base=3580165449),
+    # togethercomputer/LLaMA-2-7B-32K
+    'llama-2-7B-32K': dict(block_size=32768, n_layer=32, dim = 4096, vocab_size=32000,scaling_factor=8.),
+    'tiny-vicuna-1b': dict(block_size=2048,n_layer=22, n_head=32, n_local_heads=4, dim=2048, intermediate_size=5632, vocab_size=32000),
+    # llama 3.1 with high_freq_factor and low_freq_factor
+    "llama-3.1-8b": dict(block_size=131072, n_layer=32, n_head=32, n_local_heads=8, dim=4096, intermediate_size=14336, vocab_size=128256, rope_base=500000.0, scaling_factor=8,high_freq_factor=4, low_freq_factor=1, original_max_position_embeddings=8192),
 }
 
 class KVCache(nn.Module):
@@ -126,7 +136,15 @@ class Transformer(nn.Module):
         for b in self.layers:
             b.attention.kv_cache = KVCache(max_batch_size, max_seq_length, self.config.n_local_heads, head_dim, dtype, kv_len)
 
-        self.freqs_cis = precompute_freqs_cis(self.config.block_size, self.config.dim // self.config.n_head, self.config.rope_base, dtype)
+        if (self.config.high_freq_factor is not None) and (self.config.low_freq_factor is not None):
+            self.freqs_cis = precompute_freqs_cis(self.config.block_size, self.config.dim // self.config.n_head, self.config.rope_base,dtype,
+                                                  # new params
+                                                  self.config.scaling_factor, self.config.low_freq_factor, self.config.high_freq_factor, self.config.original_max_position_embeddings)
+        else:
+            self.freqs_cis = precompute_freqs_cis(self.config.block_size, self.config.dim // self.config.n_head, self.config.rope_base,dtype,
+                                                  # new params
+                                                self.config.scaling_factor)
+        
         self.prefill_freqs = self.freqs_cis[torch.arange(kv_len).unsqueeze(0).repeat(max_batch_size,1)]
 
     def forward(self, idx: Tensor, input_pos: Optional[Tensor], cache_seqlens: Tensor) -> Tensor:
@@ -191,10 +209,10 @@ class Attention(nn.Module):
         self.dim = config.dim
         self._register_load_state_dict_pre_hook(self.load_hook)
 
-        # if self.n_head == self.n_local_heads:
-        #     self._attn = torch.ops.mylib.custom_func
-        # else:
-        #     self._attn = torch.ops.mylib.gqa_custom
+        if self.n_head == self.n_local_heads:
+            self._attn = torch.ops.mylib.custom_func
+        else:
+            self._attn = torch.ops.mylib.gqa_custom
 
     def load_hook(self, state_dict, prefix, *args):
         if prefix + "wq.weight" in state_dict:
@@ -218,8 +236,8 @@ class Attention(nn.Module):
 
         k_cache, v_cache = self.kv_cache.k_cache, self.kv_cache.v_cache
 
-        y = torch.ops.mylib.custom_func(q, k_cache, v_cache, k, v, cache_seqlens)
-        # y = self._attn(q, k_cache, v_cache, k, v, cache_seqlens)
+        # y = torch.ops.mylib.custom_func(q, k_cache, v_cache, k, v, cache_seqlens)
+        y = self._attn(q, k_cache, v_cache, k, v, cache_seqlens)
 
         y = y.contiguous().view(bsz, seqlen, self.dim)
 
@@ -289,17 +307,64 @@ class RMSNorm(nn.Module):
         return output * self.weight
 
 
+def _compute_llama3_parameters(inv_freq, old_context_len=8192, scaling_factor=8,low_freq_factor=1,high_freq_factor=4):
+    """
+    To be used for llama 3.1 models
+        - borrowing the logic from: https://github.com/huggingface/transformers/blob/c85510f958e6955d88ea1bafb4f320074bfbd0c1/src/transformers/modeling_rope_utils.py
+        - source: _compute_llama3_parameters in modeling_rope_utils.py
+    """
+    low_freq_wavelen = old_context_len / low_freq_factor
+    high_freq_wavelen = old_context_len / high_freq_factor
+    new_freqs = []
+    for freq in inv_freq:
+        wavelen = 2 * math.pi / freq
+        if wavelen < high_freq_wavelen:
+            new_freqs.append(freq)
+        elif wavelen > low_freq_wavelen:
+            new_freqs.append(freq / scaling_factor)
+        else:
+            assert low_freq_wavelen != high_freq_wavelen
+            smooth = (old_context_len / wavelen - low_freq_factor) / (high_freq_factor - low_freq_factor)
+            new_freqs.append((1 - smooth) * freq / scaling_factor + smooth * freq)
+    inv_freq = torch.tensor(new_freqs, dtype=inv_freq.dtype, device=inv_freq.device)
+    return inv_freq
+
+# def precompute_freqs_cis(
+#     seq_len: int, n_elem: int, base: int = 10000,
+#     dtype: torch.dtype = torch.bfloat16,
+#     scaling_factor = 1
+# ) -> Tensor:
+#     freqs = 1.0 / (base ** (torch.arange(0, n_elem, 2)[: (n_elem // 2)].float() / n_elem))
+#     freqs /= scaling_factor
+#     t = torch.arange(seq_len, device=freqs.device, dtype=freqs.dtype)
+#     # t /=scaling_factor
+#     freqs = torch.outer(t, freqs)
+#     freqs_cis = torch.polar(torch.ones_like(freqs), freqs)
+#     cache = torch.stack([freqs_cis.real, freqs_cis.imag], dim=-1)
+#     return cache.to(dtype=dtype)
+
 def precompute_freqs_cis(
     seq_len: int, n_elem: int, base: int = 10000,
-    dtype: torch.dtype = torch.bfloat16
+    dtype: torch.dtype = torch.bfloat16,
+    scaling_factor: float = 1.0, # added new 
+    low_freq_factor: int = None, # added new
+    high_freq_factor: int = None, # added new
+    original_max_position_embeddings: int = None, # added new
 ) -> Tensor:
+    print(f"draft: seq_len: {seq_len}, n_elem: {n_elem}, base: {base}, dtype: {dtype}, scaling_factor: {scaling_factor}, low_freq_factor: {low_freq_factor}, high_freq_factor: {high_freq_factor}, original_max_position_embeddings: {original_max_position_embeddings}")
+
     freqs = 1.0 / (base ** (torch.arange(0, n_elem, 2)[: (n_elem // 2)].float() / n_elem))
-    t = torch.arange(seq_len, device=freqs.device)
+    
+    if (low_freq_factor is not None) and (high_freq_factor is not None):
+        freqs = _compute_llama3_parameters(freqs, original_max_position_embeddings, scaling_factor, low_freq_factor,high_freq_factor)
+    else:
+        freqs /= scaling_factor
+    t = torch.arange(seq_len, device=freqs.device, dtype=freqs.dtype)
+    # t /=scaling_factor
     freqs = torch.outer(t, freqs)
     freqs_cis = torch.polar(torch.ones_like(freqs), freqs)
     cache = torch.stack([freqs_cis.real, freqs_cis.imag], dim=-1)
     return cache.to(dtype=dtype)
-
 
 def apply_rotary_emb(x: Tensor, freqs_cis: Tensor) -> Tensor:
     xshaped = x.float().reshape(*x.shape[:-1], -1, 2)
