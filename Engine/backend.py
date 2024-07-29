@@ -61,15 +61,11 @@ class LMBackend:
             if is_gqa:
                 if bsz * seq_len < 2e6:
                     chunk_size = 32
-                elif bsz * seq_len < 8e6:
-                    chunk_size = 16
                 else:
                     chunk_size = 8
             else:
                 if bsz * seq_len < 5e5:
                     chunk_size = 32
-                elif bsz * seq_len < 2e6:
-                    chunk_size = 16
                 else:
                     chunk_size = 8
             num_chunks = (seq_len + chunk_size - 1) // chunk_size  # Ceil division
