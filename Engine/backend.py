@@ -53,11 +53,25 @@ class LMBackend:
         self.cachelens.zero_()
         self.clear_kv()
         logits = None
-        seq_len = input_ids.shape[1]
+        bsz, seq_len = input_ids.size()
+        is_gqa = self.model.config.n_local_heads < self.model.config.n_head
         position_ids = torch.arange(seq_len, device=self.device).unsqueeze(0).repeat(self.batch_size,1)
         division = seq_len > 1000
         if division:
-            chunk_size = 32
+            if is_gqa:
+                if bsz * seq_len < 2e6:
+                    chunk_size = 32
+                elif bsz * seq_len < 8e6:
+                    chunk_size = 16
+                else:
+                    chunk_size = 8
+            else:
+                if bsz * seq_len < 5e5:
+                    chunk_size = 32
+                elif bsz * seq_len < 2e6:
+                    chunk_size = 16
+                else:
+                    chunk_size = 8
             num_chunks = (seq_len + chunk_size - 1) // chunk_size  # Ceil division
             for i in range(num_chunks):
                 start_idx = i * chunk_size
