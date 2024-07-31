@@ -190,14 +190,15 @@ for step, batch in tqdm(enumerate(dataloader), total=num_eval_steps):
 
         # Target Verification
         target_logits = engine.inference(tokens_buffer)
-        # target_tokens = sample(target_logits, args.top_p, args.temperature)
-        target_tokens = target_sample(target_logits)
-        target_steps+=1
 
         if benchmark:
             torch.cuda.synchronize()
             t3 = time.time()
             target_time+=t3-t2
+            
+        # target_tokens = sample(target_logits, args.top_p, args.temperature)
+        target_tokens = target_sample(target_logits)
+        target_steps+=1
 
 
     # Verify loop
