@@ -54,23 +54,27 @@ prompt = torch.randint(low=3, high=30000, size=(max_batch_size, prefix_len), dev
 llm.encode(input_ids=prompt)
 
 profile = args.profile
+
+total_time = 0.0
 if (not profile) or (use_tp and rank != 0):
     prof = contextlib.nullcontext()
 else:
     torch.profiler._utils._init_for_cuda_graphs()
     prof = torch.profiler.profile()
 for declen in dec_list:
-    dec = torch.randint(low=3, high=30000, size=(max_batch_size, declen), device=device)
     with torch.inference_mode():
             for _ in range(warm_up):
+                dec = torch.randint(low=3, high=30000, size=(max_batch_size, declen), device=device)
                 logits = llm.inference(input_ids=dec, benchmark=True)
-            torch.cuda.synchronize()
-            t1 = time.perf_counter()
             for _ in range(T):
+                dec = torch.randint(low=3, high=30000, size=(max_batch_size, declen), device=device)
+                torch.cuda.synchronize()
+                t1 = time.perf_counter()
                 logits = llm.inference(input_ids=dec, benchmark=True)
-            torch.cuda.synchronize()
-            t2 = time.perf_counter()
-    print("Batch Size:{}, Max Length :{}, Decode Length :{}, Prefix Length :{}, inference time:{}s".format(max_batch_size, max_seq_length, declen, prefix_len, (t2 - t1)/ T))
+                torch.cuda.synchronize()
+                t2 = time.perf_counter()
+                total_time += t2 - t1
+    print("Batch Size:{}, Max Length :{}, Decode Length :{}, Prefix Length :{}, inference time:{}s".format(max_batch_size, max_seq_length, declen, prefix_len, total_time / T))
     if declen == 4:
         with prof:
             llm.inference(input_ids=dec, benchmark=True)
