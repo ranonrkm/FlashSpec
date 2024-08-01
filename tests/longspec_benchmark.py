@@ -5,7 +5,7 @@ sys.path.append("..")
 from pathlib import Path
 import torch.distributed as dist
 from FlashSpec.Engine.utils import setup_seed, cuda_graph_for_sampling_argmax_batch, sampling_argmax_batch
-from FlashSpec.Data.data_converter import convert_pg19_dataset
+from FlashSpec.Data.data_converter import convert_pg19_dataset, LongBenchDataset
 from transformers import AutoTokenizer
 from torch.utils.data.dataloader import DataLoader
 from tqdm import tqdm
@@ -18,6 +18,7 @@ parser.add_argument('--model', type=Path, default=Path("checkpoints/meta-llama/L
 parser.add_argument('--model_name', type=str, default="meta-llama/Llama-2-7b-hf", help='model name')
 parser.add_argument('--draft_ranks', nargs='+', type=int, help='Target group of ranks')
 parser.add_argument('--streamingllm_budget', type=int, default=256, help='Dataset end index.')
+parser.add_argument('--dataset', type=str, default="pg19", help='Dataset name.')
 
 parser.add_argument('--target', type=Path, default=Path("checkpoints/meta-llama/Llama-2-70b-hf/model.pth"), help='target model')
 parser.add_argument('--rank_group', nargs='+', type=int, help='Target group of ranks')
@@ -111,9 +112,20 @@ else:
 print(f"eot_1: {eot_1}, eot_2: {eot_2}")
 repeats = 20
 no_runs = int(BATCH_SIZE*repeats)
-dataset = convert_pg19_dataset(tokenizer=tokenizer, seq_len=args.prefix_len) #, end=no_runs)
+# dataset = convert_pg19_dataset(tokenizer=tokenizer, seq_len=args.prefix_len) #, end=no_runs)
+if args.dataset == "pg19":
+    dataset = convert_pg19_dataset(tokenizer=tokenizer, seq_len=args.prefix_len)
+elif args.dataset.startswith("longbench"):
+    task = args.dataset.split(":")[1]
+    dataset = LongBenchDataset(tokenizer=tokenizer, task=task, seq_len=args.prefix_len)
+else:
+    raise ValueError("Unknown dataset")
+
 dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=True)
-num_eval_steps = len(dataloader)
+try:
+    num_eval_steps = len(dataloader)
+except:
+    num_eval_steps = 50
 
 total_time = 0.0
 num_gen_tokens = 0
@@ -124,7 +136,10 @@ if benchmark:
     verify_loop = 0.0
 
 for step, batch in tqdm(enumerate(dataloader), total=num_eval_steps):
-    input_ids = batch[0].to(DEVICE)
+    if isinstance(batch, tuple):
+        input_ids = batch[0].to(DEVICE)
+    else:
+        input_ids = batch.to(DEVICE)
     terminal = False
     tokens_buffer= torch.zeros((BATCH_SIZE, args.gamma+1), device=DEVICE).long()
     output = torch.zeros(BATCH_SIZE, args.prefix_len + args.gen_len + args.gamma + 1, device=DEVICE).long()
