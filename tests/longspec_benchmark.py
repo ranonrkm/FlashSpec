@@ -125,7 +125,7 @@ dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last
 try:
     num_eval_steps = len(dataloader)
 except:
-    num_eval_steps = 50
+    num_eval_steps = 20
 
 total_time = 0.0
 num_gen_tokens = 0
