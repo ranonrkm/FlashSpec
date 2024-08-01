@@ -7,6 +7,7 @@ import torch._dynamo.config
 import torch._inductor.config
 import argparse
 from FlashSpec.Engine.backend import LMBackend
+from FlashSpec.Engine.utils import cuda_graph_for_sampling_argmax_batch
 import contextlib
 
 parser = argparse.ArgumentParser(description='Your CLI description.')
@@ -46,6 +47,7 @@ T = args.T
 
 llm = LMBackend(dtype=precision, device=device, dec_list=dec_list)
 llm.load_model(checkpoint_path, use_tp=use_tp, rank_group=args.rank_group, group = global_group)
+vocab_size = llm.model.config.vocab_size
 if args.compile:
     llm.compile()
 llm.setup_caches(max_batch_size=max_batch_size, max_seq_length=max_seq_length)
@@ -61,21 +63,29 @@ else:
     prof = torch.profiler.profile()
 for declen in dec_list:
     dec = torch.randint(low=3, high=30000, size=(max_batch_size, declen), device=device)
+    greedy_sample = cuda_graph_for_sampling_argmax_batch(device=device, 
+                                                         dtype=precision, 
+                                                         batch_size=max_batch_size, 
+                                                         idx_len=declen, 
+                                                         dim=vocab_size)
     with torch.inference_mode():
             for _ in range(warm_up):
                 logits = llm.inference(input_ids=dec, benchmark=True)
+                tokens = greedy_sample(logits)
             torch.cuda.synchronize()
             t1 = time.perf_counter()
             for _ in range(T):
                 logits = llm.inference(input_ids=dec, benchmark=True)
+                tokens = greedy_sample(logits)
             torch.cuda.synchronize()
             t2 = time.perf_counter()
     print("Batch Size:{}, Max Length :{}, Decode Length :{}, Prefix Length :{}, inference time:{}s".format(max_batch_size, max_seq_length, declen, prefix_len, (t2 - t1)/ T))
-    if declen == 4:
-        with prof:
-            llm.inference(input_ids=dec, benchmark=True)
-        if hasattr(prof, "export_chrome_trace"):
-                if use_tp:
-                    prof.export_chrome_trace(f"{profile}_rank_{rank}.json")
-                else:
-                    prof.export_chrome_trace(f"{profile}.json")
+
+    with prof:
+        logits = llm.inference(input_ids=dec, benchmark=True)
+        tokens = greedy_sample(logits)
+    if hasattr(prof, "export_chrome_trace"):
+            if use_tp:
+                prof.export_chrome_trace(f"{profile}_rank_{rank}_decode_{declen}.json")
+            else:
+                prof.export_chrome_trace(f"{profile}_decode_{declen}.json")
