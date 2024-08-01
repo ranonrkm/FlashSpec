@@ -227,8 +227,8 @@ class Attention(nn.Module):
             k_cache, v_cache = self.kv_cache.k_cache, self.kv_cache.v_cache
 
         # for decoding and verification, use gqa_custom
-        # y = self._attn(q, k_cache, v_cache, k, v, cache_seqlens)
-        y = torch.ops.mylib.custom_func(q, k_cache, v_cache, k, v, cache_seqlens)
+        y = self._attn(q, k_cache, v_cache, k, v, cache_seqlens)
+        # y = torch.ops.mylib.custom_func(q, k_cache, v_cache, k, v, cache_seqlens)
 
         y = y.contiguous().view(bsz, seqlen, self.dim)
 
