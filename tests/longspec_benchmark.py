@@ -136,7 +136,7 @@ if benchmark:
     verify_loop = 0.0
 
 for step, batch in tqdm(enumerate(dataloader), total=num_eval_steps):
-    if isinstance(batch, tuple):
+    if isinstance(batch, list):
         input_ids = batch[0].to(DEVICE)
     else:
         input_ids = batch.to(DEVICE)
