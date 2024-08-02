@@ -123,7 +123,7 @@ else:
 
 dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=True)
 try:
-    num_eval_steps = len(dataloader)
+    num_eval_steps = min(len(dataloader), 20)
 except:
     num_eval_steps = 20
 
@@ -136,6 +136,8 @@ if benchmark:
     verify_loop = 0.0
 
 for step, batch in tqdm(enumerate(dataloader), total=num_eval_steps):
+    if step >= num_eval_steps:
+        break
     if isinstance(batch, list):
         input_ids = batch[0].to(DEVICE)
     else:
