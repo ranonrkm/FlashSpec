@@ -254,14 +254,13 @@ class Attention(nn.Module):
 
         # for prefill, use original impl
         y = torch.ops.mylib.custom_func(q, k_cache, v_cache, k, v, cache_seqlens)
-        
+
         y = y.contiguous().view(bsz, seqlen, self.dim)
 
         y = self.wo(y)
         if self.process_group != None:
             dist.all_reduce(y)
         return y
-
 
 class FeedForward(nn.Module):
     def __init__(self, config: ModelArgs) -> None:

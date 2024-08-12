@@ -6,7 +6,7 @@ from pathlib import Path
 import torch.distributed as dist
 from FlashSpec.Engine.utils import setup_seed, cuda_graph_for_sampling_argmax_batch, sampling_argmax_batch
 from FlashSpec.Data.data_converter import convert_pg19_dataset
-from transformers import LlamaTokenizer
+from transformers import AutoTokenizer
 from torch.utils.data.dataloader import DataLoader
 from tqdm import tqdm
 import argparse
@@ -14,6 +14,7 @@ from FlashSpec.Engine.backend_selfspec import LMBackend
 
 parser = argparse.ArgumentParser(description='Process model configuration and partitions.')
 parser.add_argument('--model', type=Path, default=Path("checkpoints/meta-llama/Llama-2-7b-hf/model.pth"), help='model')
+parser.add_argument('--model_name', type=str, default="meta-llama/Llama-2-7b-hf", help='model name')
 parser.add_argument('--streamingllm_budget', type=int, default=256, help='Dataset end index.')
 parser.add_argument('--rank_group', nargs='+', type=int, help='Target group of ranks')
 parser.add_argument('--compile', action='store_true', help='Whether to compile the model.')
@@ -31,7 +32,7 @@ parser.add_argument('--benchmark', action='store_true', help='Whether to compile
 
 # Assert max length <= max context length
 args = parser.parse_args()
-assert args.prefix_len + args.gen_len + args.gamma + 1 <= 4096
+# assert args.prefix_len + args.gen_len + args.gamma + 1 <= 4096
 
 # Init model parallelism
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -67,9 +68,17 @@ for i in [1, 2]:
     draft_sample[i] = cuda_graph_for_sampling_argmax_batch(device=DEVICE, dtype=DTYPE, batch_size=BATCH_SIZE, idx_len=i)
 
 # Load dataset
-tokenizer = LlamaTokenizer.from_pretrained("meta-llama/Llama-2-7b-hf")
+tokenizer = AutoTokenizer.from_pretrained(args.model_name)
 tokenizer.pad_token = tokenizer.eos_token
-dataset = convert_pg19_dataset(tokenizer=tokenizer, seq_len=args.prefix_len)
+eot_1 = tokenizer.eos_token_id
+if tokenizer.unk_token_id is not None:
+    eot_2 = tokenizer.unk_token_id
+else:
+    eot_2 = tokenizer.encode("<|eot_id|>")[-1]
+print(f"eot_1: {eot_1}, eot_2: {eot_2}")
+repeats = 20
+no_runs = int(BATCH_SIZE*repeats)
+dataset = convert_pg19_dataset(tokenizer=tokenizer, seq_len=args.prefix_len) #, end=no_runs)
 dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=True)
 num_eval_steps = len(dataloader)
 
@@ -85,7 +94,7 @@ for step, batch in tqdm(enumerate(dataloader), total=num_eval_steps):
     input_ids = batch[0].to(DEVICE)
     terminal = False
     tokens_buffer= torch.zeros((BATCH_SIZE, args.gamma+1), device=DEVICE).long()
-    output = torch.zeros(BATCH_SIZE, args.prefix_len + args.gen_len + 1, device=DEVICE).long()
+    output = torch.zeros(BATCH_SIZE, args.prefix_len + args.gen_len + args.gamma + 1, device=DEVICE).long()
     output[:, :input_ids.shape[1]] = input_ids
     num_nodes = torch.zeros(BATCH_SIZE,device=DEVICE).long()
     num_nodes += input_ids.shape[1]
@@ -148,7 +157,7 @@ for step, batch in tqdm(enumerate(dataloader), total=num_eval_steps):
             # Only increase accept_nums where accept_flags are still True
             accept_nums += accept_flags.int()
             # Wether or not terminate
-            condition = ((draft_token.unsqueeze(1) == 0) | (draft_token.unsqueeze(1) == 2)) & accept_flags
+            condition = ((draft_token.unsqueeze(1) == eot_1) | (draft_token.unsqueeze(1) == eot_2)) & accept_flags
             if condition.any():
                 terminal = True
             accept_flags = accept_flags & ~condition
@@ -165,11 +174,11 @@ for step, batch in tqdm(enumerate(dataloader), total=num_eval_steps):
 
         # Set the cache length to the accepted length
         engine.cachelens += accept_nums.flatten()
-        # max_limit = torch.full_like(accept_nums, args.gamma, device = DEVICE)
-        # limited_accept_nums = torch.min(accept_nums, max_limit)
-        
+        max_limit = torch.full_like(accept_nums, args.gamma, device = DEVICE)
+        limited_accept_nums = torch.min(accept_nums, max_limit)
         engine.draft_cachelens = engine.draft_cachelens - args.gamma
-        engine.draft_cachelens += accept_nums.flatten()
+        # engine.draft_cachelens += accept_nums.flatten()
+        engine.draft_cachelens += limited_accept_nums.flatten()
         
         # Get the bonus tokens
         indices = accept_nums - 1
@@ -184,6 +193,14 @@ for step, batch in tqdm(enumerate(dataloader), total=num_eval_steps):
         # Put Bonus tokens to the tokens buffer, and prepare the variables for next itr
         if not terminal:
             tokens_buffer[:, :1] = bonus_tokens
+            if accept_nums.max() == args.gamma + 1:
+                next_double = True
+                double_buffer = torch.zeros((BATCH_SIZE, 2), device=DEVICE).long()
+                mask = (accept_nums == (args.gamma + 1)).squeeze()
+                double_buffer[:, 0] = torch.where(mask, tokens_buffer[:, -1], bonus_tokens[:, 0])
+                double_buffer[:, 1] = torch.where(mask, bonus_tokens[:, 0], torch.zeros_like(bonus_tokens[:, 0]))
+                non_zero_mask = double_buffer != 0
+                cachelens_update = non_zero_mask.sum(dim=1).flatten()
         
         if not terminal:
             if benchmark:
@@ -202,14 +219,14 @@ for step, batch in tqdm(enumerate(dataloader), total=num_eval_steps):
     torch.cuda.synchronize()
     end=time.perf_counter()
     total_time += end-start
-    num_gen_tokens += (num_nodes.sum() - input_ids.shape[1]*BATCH_SIZE)
+    num_gen_tokens += (num_nodes.sum() - (input_ids.shape[1]+1)*BATCH_SIZE)
     if args.printoutput:
         for i in range(BATCH_SIZE):
             print(tokenizer.decode(output[i, args.prefix_len:num_nodes[i]]))
     print("total time :{:.5f}s, time per iter :{:.5f}s, decoding step: {}, large model step: {}".format(total_time, total_time / target_steps, num_gen_tokens, target_steps))
     if benchmark:
         print("target time :{:.5f}s, draft time :{:.5f}s, verify loop : {}, avg generate len per sentence: {}".format(target_time/target_steps, draft_time / target_steps, verify_loop/target_steps, num_gen_tokens/target_steps/BATCH_SIZE))
-    if step < 10:
+    if step < 3:   # TODO: revert to 10?
         total_time = 0.0
         num_gen_tokens = 0
         target_steps = 0
