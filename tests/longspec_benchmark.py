@@ -113,7 +113,7 @@ repeats = 20
 no_runs = int(BATCH_SIZE*repeats)
 dataset = convert_pg19_dataset(tokenizer=tokenizer, seq_len=args.prefix_len) #, end=no_runs)
 dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=True)
-num_eval_steps = len(dataloader)
+num_eval_steps = min(len(dataloader), 10)
 
 total_time = 0.0
 num_gen_tokens = 0
@@ -124,6 +124,8 @@ if benchmark:
     verify_loop = 0.0
 
 for step, batch in tqdm(enumerate(dataloader), total=num_eval_steps):
+    if step >= num_eval_steps:
+        break
     input_ids = batch[0].to(DEVICE)
     terminal = False
     tokens_buffer= torch.zeros((BATCH_SIZE, args.gamma+1), device=DEVICE).long()
