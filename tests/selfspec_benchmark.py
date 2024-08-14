@@ -61,7 +61,7 @@ engine = LMBackend(dtype=DTYPE, device=DEVICE, dec_list=target_dec_list, draft_d
 engine.load_model(checkpoint_path, use_tp=use_tp, rank_group = args.rank_group, group=global_group)
 if args.compile:
     engine.compile()
-engine.setup_caches(max_batch_size=BATCH_SIZE, max_seq_length=MAX_LEN_TARGET, streamingllm_budget=args.streamingllm_budget)
+engine.setup_caches(max_batch_size=BATCH_SIZE, max_seq_length=MAX_LEN_TARGET, streamingllm_budget=args.streamingllm_budget, buffer=args.gen_len+args.gamma+1)
 target_sample = cuda_graph_for_sampling_argmax_batch(device=DEVICE, dtype=DTYPE, batch_size=BATCH_SIZE, idx_len=args.gamma+1)
 draft_sample = {}
 for i in [1, 2]:

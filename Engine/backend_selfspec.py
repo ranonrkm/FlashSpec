@@ -14,21 +14,24 @@ class LMBackend:
         for dec_len in draft_dec_list:
             if dec_len == 0: continue
             self.draft_forward[dec_len] = lambda model, x, input_pos, cache_seqlens: model.draft_forward(x, input_pos, cache_seqlens)
-        self.prefill = lambda model, x, input_pos, cache_seqlens: model(x, input_pos, cache_seqlens)
+        self.prefill = lambda model, x, input_pos, cache_seqlens: model.prefill(x, input_pos, cache_seqlens)
+        self.draft_prefill = lambda model, x, input_pos, cache_seqlens, is_last: model.draft_prefill(x, input_pos, cache_seqlens, is_last)
         self.cachelens = None
         self.draft_cachelens = None
+        self.streaming_budget = None
 
     def load_model(self, checkpoints: str, use_tp: bool, rank_group=None, group = None):
         self.model: Transformer = load_model_selfspec(checkpoint_path=checkpoints, device=self.device, precision=self.dtype, use_tp= use_tp, rank_group=rank_group, group = group)
 
     @torch.inference_mode()
-    def setup_caches(self, max_batch_size: int = 1, max_seq_length: int = 2048, streamingllm_budget: int = 256):
+    def setup_caches(self, max_batch_size: int = 1, max_seq_length: int = 2048, streamingllm_budget: int = 256, buffer: int = 0):
         self.max_length = max_seq_length
         self.batch_size = max_batch_size
         self.cachelens = torch.zeros(max_batch_size, dtype=torch.int32, device=self.device)
         self.draft_cachelens = torch.zeros(max_batch_size, dtype=torch.int32, device=self.device)
         with torch.device(self.device):
-            self.model.setup_caches(max_batch_size=max_batch_size, max_seq_length=max_seq_length, streaming_budget=streamingllm_budget)
+            self.model.setup_caches(max_batch_size=max_batch_size, max_seq_length=max_seq_length, streaming_budget=streamingllm_budget, buffer=buffer)
+        self.streaming_budget = streamingllm_budget
 
     def compile(self, encode=False):
         import torch._dynamo.config
@@ -102,7 +105,17 @@ class LMBackend:
                     cache_seqlens=chunk_cache_seqlens
                 )
 
+                if end_idx > self.streaming_budget:
+                    chunk_position_ids = torch.arange(self.streaming_budget - chunk_input_ids.shape[1], self.streaming_budget, device = self.device).unsqueeze(0).repeat(input_ids.shape[0],1).long()
+                self.draft_prefill(
+                    model=self.model,
+                    x=chunk_input_ids,
+                    input_pos=chunk_position_ids,
+                    cache_seqlens=chunk_cache_seqlens,
+                    is_last = i == num_chunks-1
+                )
         else:
+            raise NotImplementedError("Not implemented for seq_len < 1000")
             logits = self.prefill(
                 model=self.model,
                 x=input_ids,
@@ -111,8 +124,9 @@ class LMBackend:
             )
 
         self.cachelens += seq_len
-        self.draft_cachelens += seq_len
-        
+        # self.draft_cachelens += seq_len
+        self.draft_cachelens += self.streaming_budget
+
         return logits
           
     
