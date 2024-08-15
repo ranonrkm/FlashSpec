@@ -36,18 +36,20 @@ def convert_cnn_dataset(tokenizer, seq_len = 256):
     dataset.set_format(type='torch', columns=['input_ids', 'attention_mask'])
     return dataset
 
-def convert_pg19_dataset(tokenizer, seq_len = 4096):
+def convert_pg19_dataset(tokenizer, seq_len = 4096, end = 20):
     datasetparent = "Data/pg19/"
     d_files = os.listdir(datasetparent)
     dataset = load_dataset("json", data_files = [datasetparent + name for name in d_files], split = "train")
     tokenized_prompts = []
-    for i in tqdm(range(0,20)):
+    for i in tqdm(range(0,50)):
         prompt = dataset[i]['text']
-        tokenized_prompt = tokenizer.encode(prompt, return_tensors="pt").split(seq_len, dim=-1)[2:-1]
+        tokenized_prompt = tokenizer.encode(prompt, return_tensors="pt")[:,8000:]
+        tokenized_prompt = tokenized_prompt.split(seq_len, dim=-1)[:-1]
+        
         for i in range(len(tokenized_prompt)):
              tokenized_prompt[i][:, 0] = 1
              tokenized_prompts.append(tokenized_prompt[i])
-    data = torch.cat(tokenized_prompts, dim=0)
+    data = torch.cat(tokenized_prompts, dim=0).repeat(end,1)
     return TensorDataset(data)
 
 # if __name__ == "__main__":

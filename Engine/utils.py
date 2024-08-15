@@ -1,7 +1,112 @@
 import torch
 import numpy as np
 import random
+from einops import rearrange
 from torch.nn.functional import softmax
+from flash_attn import flash_attn_with_kvcache
+from einops import rearrange
+
+torch.library.define(
+    "mylib::custom_func",
+    "(Tensor q, Tensor(a!) k_cache, Tensor(b!) v_cache, Tensor k, Tensor v, Tensor cache_seqlens) -> Tensor",
+)
+
+@torch.library.impl("mylib::custom_func", "cuda")
+def custom_func(q, k_cache, v_cache, k, v, cache_seqlens):
+    return flash_attn_with_kvcache(
+        q, k_cache, v_cache, k=k, v=v, cache_seqlens=cache_seqlens, causal=True
+    )
+
+@torch.library.impl_abstract("mylib::custom_func")
+def custom_func_abstract(q, k_cache, v_cache, k, v, cache_seqlens):
+    return torch.empty_like(q)
+
+torch.library.define(
+    "mylib::custom_func_2",
+    "(Tensor q, Tensor(a!) k_cache, Tensor(a!) v_cache) -> Tensor",
+)
+
+@torch.library.impl("mylib::custom_func_2", "cuda")
+def custom_func_2(q, k_cache, v_cache):
+    return flash_attn_with_kvcache(
+        q, k_cache, v_cache, causal=True
+    )
+
+@torch.library.impl_abstract("mylib::custom_func_2")
+def custom_func_2_abstract(q, k_cache, v_cache):
+    return torch.empty_like(q)
+
+torch.library.define(
+    "mylib::gqa_custom",
+    "(Tensor q, Tensor(a!) k_cache, Tensor(b!) v_cache, Tensor k, Tensor v, Tensor cache_seqlens) -> Tensor",
+)
+
+@torch.library.impl_abstract("mylib::gqa_custom")
+def gqa_custom_abstract(q, k_cache, v_cache, k, v, cache_seqlens):
+    return torch.empty_like(q)
+
+# @torch.library.impl("mylib::gqa_custom", "cuda")
+# def gqa_custom(q, k_cache, v_cache, k, v, cache_seqlens):
+#     B, T, H_q, D = q.size()
+#     H_k = k.size(2)
+#     rep = H_q // H_k
+#     q_reshaped = q.view(B, T, H_k, rep, D).transpose(2, 3).contiguous().view(B, T*rep, H_k, D).contiguous()
+#     y_past, lse_past = flash_attn_with_kvcache(q_reshaped, k_cache, v_cache, None, None, cache_seqlens=cache_seqlens, causal=True, return_softmax_lse=True)
+#     y_new, lse_new = flash_attn_with_kvcache(q, k, v, None, None, None, causal=True, return_softmax_lse=True)     
+#     y_past = y_past.view(B, T, rep, H_k, D).transpose(2, 3).contiguous().view(B, T, H_q, D)
+#     lse_past = rearrange(lse_past, 'b h (t r) -> b t (h r) 1', r=rep).contiguous()
+    
+#     lse_past = lse_past.to(y_past.dtype)
+#     lse_new = lse_new.unsqueeze(-1).transpose(1, 2).to(y_new.dtype)
+    
+#     sumexp_past = torch.exp(lse_past.float())
+#     sumexp_new = torch.exp(lse_new.float())
+
+#     sumexp_total = sumexp_past + sumexp_new
+#     y = (y_past * sumexp_past + y_new * sumexp_new) / sumexp_total
+    
+#     # insert new k and v to k_cache and v_cache, starting from cache_seqlens position
+#     insert_indices = cache_seqlens.unsqueeze(-1) + torch.arange(T, device=cache_seqlens.device).unsqueeze(0)
+#     insert_indices = insert_indices[..., None, None].expand(-1, -1, H_k, D)
+#     k_cache.scatter_(1, insert_indices, k)
+#     v_cache.scatter_(1, insert_indices, v)   
+
+#     return y.to(q.dtype)
+
+@torch.library.impl("mylib::gqa_custom", "cuda")
+def gqa_custom(q, k_cache, v_cache, k, v, cache_seqlens):
+    B, T, H_q, D = q.size()
+    H_k = k.size(2)
+    rep = H_q // H_k
+    q_reshaped = q.view(B, T, H_k, rep, D).transpose(2, 3).contiguous().view(B, T*rep, H_k, D).contiguous()
+    v_new = torch.zeros(B, T*rep, H_k, D, device=q.device, dtype=q.dtype)
+    k_new = torch.zeros_like(v_new)
+    
+    # the extra 1's added to the partition functions
+    # they are of the pattern [0, 1, 2, ..., rep-1, rep-1, rep, rep+1, ..., 2*rep-1, 2*rep-1, 2*rep, ...]
+    offset = torch.ones(rep, device=q.device, dtype=q.dtype)
+    offset[0].zero_()
+    extra = torch.cumsum(offset.repeat(T), dim=0)[None, None, :]
+    insert_indices = torch.arange(0, T*rep, rep, device=q.device)[None, :, None, None].expand(B, -1, H_k, D)
+    k_new.scatter_(1, insert_indices, k)
+    v_new.scatter_(1, insert_indices, v)
+    
+    # print(q_reshaped.shape, k_cache.shape, k_new.shape)
+    y, lse = flash_attn_with_kvcache(q_reshaped, k_cache, v_cache, k_new, v_new, cache_seqlens=cache_seqlens, causal=True, return_softmax_lse=True)
+    
+    extra = extra.expand_as(lse)
+    correction = 1./ (1 - extra * torch.exp(-lse))
+    correction = correction.transpose(1, 2).unsqueeze(-1)
+    y = y * correction.to(y.dtype)
+    y = y.view(B, T, rep, H_k, D).transpose(2, 3).contiguous().view(B, T, H_q, D)
+    
+    # insert new k and v to k_cache and v_cache, starting from cache_seqlens position
+    insert_indices = cache_seqlens.unsqueeze(-1) + torch.arange(T, device=cache_seqlens.device).unsqueeze(0)
+    insert_indices = insert_indices[..., None, None].expand(-1, -1, H_k, D)
+    k_cache.scatter_(1, insert_indices, k)
+    v_cache.scatter_(1, insert_indices, v)   
+
+    return y.to(q.dtype)
 
 def get_sampling_logits(logits :torch.Tensor, top_p:float, T: float, replicate = False):
     if replicate:
@@ -160,6 +265,23 @@ def load_model_draft(checkpoint_path, device, precision, use_tp, rank_group=None
 
     if use_tp:
         from FlashSpec.Engine.tp_draft import apply_tp
+        print("Applying tensor parallel to model ...")
+        apply_tp(model, rank_group, group=group)
+
+    model = model.to(device=device, dtype=precision)
+    return model.eval()
+
+def load_model_selfspec(checkpoint_path, device, precision, use_tp, rank_group=None, group=None):
+    import FlashSpec.Engine.model_selfspec as selfspec
+    with torch.device('meta'):
+        model = selfspec.Transformer.from_name(checkpoint_path.parent.name)
+    checkpoint = torch.load(str(checkpoint_path), mmap=True, weights_only=True)
+    if "model" in checkpoint and "stories" in str(checkpoint_path):
+        checkpoint = checkpoint["model"]
+    model.load_state_dict(checkpoint, assign=True)
+
+    if use_tp:
+        from FlashSpec.Engine.tp import apply_tp
         print("Applying tensor parallel to model ...")
         apply_tp(model, rank_group, group=group)
 

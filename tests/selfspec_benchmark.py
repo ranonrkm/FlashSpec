@@ -10,16 +10,13 @@ from transformers import AutoTokenizer
 from torch.utils.data.dataloader import DataLoader
 from tqdm import tqdm
 import argparse
-from FlashSpec.Engine.backend import LMBackend
-from FlashSpec.Engine.backend_draft import LMBackend_Draft
+import contextlib
+from FlashSpec.Engine.backend_selfspec import LMBackend
 
 parser = argparse.ArgumentParser(description='Process model configuration and partitions.')
 parser.add_argument('--model', type=Path, default=Path("checkpoints/meta-llama/Llama-2-7b-hf/model.pth"), help='model')
 parser.add_argument('--model_name', type=str, default="meta-llama/Llama-2-7b-hf", help='model name')
-parser.add_argument('--draft_ranks', nargs='+', type=int, help='Target group of ranks')
 parser.add_argument('--streamingllm_budget', type=int, default=256, help='Dataset end index.')
-
-parser.add_argument('--target', type=Path, default=Path("checkpoints/meta-llama/Llama-2-70b-hf/model.pth"), help='target model')
 parser.add_argument('--rank_group', nargs='+', type=int, help='Target group of ranks')
 parser.add_argument('--compile', action='store_true', help='Whether to compile the model.')
 
@@ -33,73 +30,43 @@ parser.add_argument('--seed', type=int, default=123, help='Random seed.')
 
 parser.add_argument('--printoutput', action='store_true', help='Whether to compile the model.')
 parser.add_argument('--benchmark', action='store_true', help='Whether to compile the model.')
-parser.add_argument('--streamingllm_budget', type=int, default=256, help='Dataset end index.')
 
 # Assert max length <= max context length
 args = parser.parse_args()
 # assert args.prefix_len + args.gen_len + args.gamma + 1 <= 4096
 
 # Init model parallelism
-draft_tp = len(args.draft_ranks) > 1
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 global print
 from FlashSpec.Engine.tp import init_dist
 use_tp = len(args.rank_group) > 1
 global_group = None
-draft_group = None
 if use_tp:
-    if draft_tp:
-        rank, global_group, draft_group = init_dist(args.draft_ranks)
-    else:
-        rank, global_group = init_dist()
+    rank, global_group = init_dist()
     if rank != args.rank_group[0]:
         print = lambda *args, **kwargs: None
 
 setup_seed(args.seed)
 print(f"Using device={DEVICE}")
 MAX_LEN_TARGET = args.prefix_len + args.gen_len + args.gamma
-MAX_LEN_DRAFT = args.streamingllm_budget + args.gen_len + args.gamma
 DTYPE = torch.bfloat16
 BATCH_SIZE = args.B
 benchmark = args.benchmark
-checkpoint_path = args.target
-draft_checkpoint_path = args.model
+checkpoint_path = args.model
 
 target_dec_list = [args.gamma + 1]
+draft_dec_list = [1,2]
 
 # Load target model
-engine = LMBackend(dtype=DTYPE, device=DEVICE, dec_list=target_dec_list)
+engine = LMBackend(dtype=DTYPE, device=DEVICE, dec_list=target_dec_list, draft_dec_list=draft_dec_list)
 engine.load_model(checkpoint_path, use_tp=use_tp, rank_group = args.rank_group, group=global_group)
-
-assert args.prefix_len + args.gen_len + args.gamma + 1 <= engine.model.config.block_size, f"Model block_size is {engine.model.config.block_size}, but max_gen+gamma+1 is {args.prefix_len + args.gen_len + args.gamma + 1}"
-vocab_size = engine.model.config.vocab_size
-
 if args.compile:
     engine.compile()
-engine.setup_caches(max_batch_size=BATCH_SIZE, max_seq_length=MAX_LEN_TARGET)
-target_sample = cuda_graph_for_sampling_argmax_batch(device=DEVICE, dtype=DTYPE, batch_size=BATCH_SIZE, idx_len=args.gamma+1, dim=vocab_size)
-
-# Load draft model
-if not use_tp:
-    draft = LMBackend_Draft(dtype=DTYPE, device=DEVICE, dec_list=[1,2])
-    draft.load_model(draft_checkpoint_path, use_tp=False, rank_group=args.rank_group, group=global_group)
-    if args.compile:
-        draft.compile()
-    draft.setup_caches(max_batch_size=BATCH_SIZE, max_seq_length=MAX_LEN_DRAFT, kv_len=args.streamingllm_budget)
-    draft_sample = {}
-    for i in [1, 2]:
-        draft_sample[i] = cuda_graph_for_sampling_argmax_batch(device=DEVICE, dtype=DTYPE, batch_size=BATCH_SIZE, idx_len=i, dim=vocab_size)
-else:
-    if rank in args.draft_ranks:
-        draft = LMBackend_Draft(dtype=DTYPE, device=DEVICE, dec_list=[1,2])
-        draft.load_model(draft_checkpoint_path, use_tp=draft_tp, rank_group=args.draft_ranks, group=draft_group)
-        if args.compile:
-            draft.compile()
-        draft.setup_caches(max_batch_size=BATCH_SIZE, max_seq_length=MAX_LEN_DRAFT, kv_len=args.streamingllm_budget)
-        draft_sample = {}
-        for i in [1, 2]:
-            draft_sample[i] = cuda_graph_for_sampling_argmax_batch(device=DEVICE, dtype=DTYPE, batch_size=BATCH_SIZE, idx_len=i, dim=vocab_size)
-    dist.barrier()
+engine.setup_caches(max_batch_size=BATCH_SIZE, max_seq_length=MAX_LEN_TARGET, streamingllm_budget=args.streamingllm_budget, buffer=args.gen_len+args.gamma)
+target_sample = cuda_graph_for_sampling_argmax_batch(device=DEVICE, dtype=DTYPE, batch_size=BATCH_SIZE, idx_len=args.gamma+1)
+draft_sample = {}
+for i in [1, 2]:
+    draft_sample[i] = cuda_graph_for_sampling_argmax_batch(device=DEVICE, dtype=DTYPE, batch_size=BATCH_SIZE, idx_len=i)
 
 # Load dataset
 tokenizer = AutoTokenizer.from_pretrained(args.model_name)
@@ -114,7 +81,7 @@ repeats = 20
 no_runs = int(BATCH_SIZE*repeats)
 dataset = convert_pg19_dataset(tokenizer=tokenizer, seq_len=args.prefix_len) #, end=no_runs)
 dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=True)
-num_eval_steps = min(len(dataloader), 10)
+num_eval_steps = min(10, len(dataloader))
 
 total_time = 0.0
 num_gen_tokens = 0
@@ -123,6 +90,8 @@ if benchmark:
     draft_time = 0.0
     target_time = 0.0
     verify_loop = 0.0
+
+prof = contextlib.nullcontext()
 
 for step, batch in tqdm(enumerate(dataloader), total=num_eval_steps):
     if step >= num_eval_steps:
@@ -136,58 +105,38 @@ for step, batch in tqdm(enumerate(dataloader), total=num_eval_steps):
     num_nodes += input_ids.shape[1]
 
     logits = engine.encode(input_ids=input_ids)[:,-1]
-
-    if not use_tp:
-        draft.encode(input_ids=input_ids)
-    else:
-        if rank in args.draft_ranks:
-            draft.encode(input_ids=input_ids)
-        dist.barrier()
     
     tokens_buffer[:,:1] = sampling_argmax_batch(logits=logits)
     
-    # next_double = False
-    first = True
-    double_buffer = torch.zeros((BATCH_SIZE, 2), device=DEVICE).long()
+    next_double = False
+    double_buffer = None
     cachelens_update = None
 
     torch.cuda.synchronize()
     start = time.perf_counter()
     while terminal == False:
 
+        # Draft speculation
+        if (step == num_eval_steps - 1) and (rank == 0):
+            torch.profiler._utils._init_for_cuda_graphs()
+            prof = torch.profiler.profile()
+
         if benchmark:
             torch.cuda.synchronize()
             t1 = time.time()
 
-        # Draft speculation
-        if not use_tp:
+        with prof:    
             for i in range(args.gamma):
                 if i == 0:
-                    if not first:
+                    if next_double:
                         # The cachelens should increase 1 or 2
-                        next_tokens = draft_sample[2](draft.inference(double_buffer, cachelen_update=cachelens_update))
+                        next_tokens = draft_sample[2](engine.draft_inference(double_buffer, cachelen_update=cachelens_update))
                         tokens_buffer[:,i+1:i+2] = next_tokens.gather(1, cachelens_update.view(-1,1) - 1)
-                        # next_double = False
+                        next_double = False
                     else:
-                        tokens_buffer[:,i+1:i+2] = draft_sample[1](draft.inference(tokens_buffer[:, i].view(-1,1)))
-                        first = False
+                        tokens_buffer[:,i+1:i+2] = draft_sample[1](engine.draft_inference(tokens_buffer[:, i].view(-1,1)))
                     continue
-                tokens_buffer[:,i+1:i+2] = draft_sample[1](draft.inference(tokens_buffer[:, i].view(-1,1)))
-        else:
-            if rank in args.draft_ranks:
-                for i in range(args.gamma):
-                    if i == 0:
-                        if not first:
-                            next_tokens = draft_sample[2](draft.inference(double_buffer,cachelen_update=cachelens_update))
-                            tokens_buffer[:,i+1:i+2] = next_tokens.gather(1, cachelens_update.view(-1,1) - 1)
-                            # next_double = False
-                        else:
-                            tokens_buffer[:,i+1:i+2] = draft_sample[1](draft.inference(tokens_buffer[:, i].view(-1,1)))
-                            first = False
-                        continue
-                    tokens_buffer[:,i+1:i+2] = draft_sample[1](draft.inference(tokens_buffer[:, i].view(-1,1)))
-            dist.broadcast(tokens_buffer, src=args.draft_ranks[0], group=global_group)
-
+                tokens_buffer[:,i+1:i+2] = draft_sample[1](engine.draft_inference(tokens_buffer[:, i].view(-1,1)))
 
         if benchmark:
             torch.cuda.synchronize()
@@ -201,11 +150,9 @@ for step, batch in tqdm(enumerate(dataloader), total=num_eval_steps):
             torch.cuda.synchronize()
             t3 = time.time()
             target_time+=t3-t2
-            
-        # target_tokens = sample(target_logits, args.top_p, args.temperature)
+
         target_tokens = target_sample(target_logits)
         target_steps+=1
-
 
     # Verify loop
         bonus_tokens = torch.full((BATCH_SIZE, 1), 0, device=DEVICE).long()
@@ -239,13 +186,9 @@ for step, batch in tqdm(enumerate(dataloader), total=num_eval_steps):
         engine.cachelens += accept_nums.flatten()
         max_limit = torch.full_like(accept_nums, args.gamma, device = DEVICE)
         limited_accept_nums = torch.min(accept_nums, max_limit)
-        if not use_tp:
-            draft.cachelens = draft.cachelens - args.gamma
-            draft.cachelens += limited_accept_nums.flatten()
-        else:
-            if rank in args.draft_ranks:
-                draft.cachelens = draft.cachelens - args.gamma
-                draft.cachelens += limited_accept_nums.flatten()
+        engine.draft_cachelens = engine.draft_cachelens - args.gamma
+        # engine.draft_cachelens += accept_nums.flatten()
+        engine.draft_cachelens += limited_accept_nums.flatten()
         
         # Get the bonus tokens
         indices = accept_nums - 1
@@ -260,14 +203,14 @@ for step, batch in tqdm(enumerate(dataloader), total=num_eval_steps):
         # Put Bonus tokens to the tokens buffer, and prepare the variables for next itr
         if not terminal:
             tokens_buffer[:, :1] = bonus_tokens
-            # if accept_nums.max() == args.gamma + 1:
-                # next_double = True
-                # double_buffer = torch.zeros((BATCH_SIZE, 2), device=DEVICE).long()
-            mask = (accept_nums == (args.gamma + 1)).squeeze()
-            double_buffer[:, 0] = torch.where(mask, tokens_buffer[:, -1], bonus_tokens[:, 0])
-            double_buffer[:, 1] = torch.where(mask, bonus_tokens[:, 0], torch.zeros_like(bonus_tokens[:, 0]))
-            non_zero_mask = double_buffer != 0
-            cachelens_update = non_zero_mask.sum(dim=1).flatten()
+            if accept_nums.max() == args.gamma + 1:
+                next_double = True
+                double_buffer = torch.zeros((BATCH_SIZE, 2), device=DEVICE).long()
+                mask = (accept_nums == (args.gamma + 1)).squeeze()
+                double_buffer[:, 0] = torch.where(mask, tokens_buffer[:, -1], bonus_tokens[:, 0])
+                double_buffer[:, 1] = torch.where(mask, bonus_tokens[:, 0], torch.zeros_like(bonus_tokens[:, 0]))
+                non_zero_mask = double_buffer != 0
+                cachelens_update = non_zero_mask.sum(dim=1).flatten()
         
         if not terminal:
             if benchmark:
@@ -303,3 +246,6 @@ for step, batch in tqdm(enumerate(dataloader), total=num_eval_steps):
             verify_loop = 0.0
     if use_tp:
         dist.barrier()
+
+if hasattr(prof, "export_chrome_trace"):
+    prof.export_chrome_trace(f"prof_selfspec.json")

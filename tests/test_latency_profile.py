@@ -1,4 +1,3 @@
-import os
 import sys
 import time
 from pathlib import Path
@@ -7,8 +6,8 @@ import torch
 import torch._dynamo.config
 import torch._inductor.config
 import argparse
-import contextlib
 from FlashSpec.Engine.backend import LMBackend
+import contextlib
 
 parser = argparse.ArgumentParser(description='Your CLI description.')
 parser.add_argument('--checkpoint_path', type=Path, default=Path("checkpoints/meta-Transformer/Transformer-2-7b-chat-hf/model.pth"), help='Model checkpoint path.')
@@ -19,8 +18,8 @@ parser.add_argument('--P', type=int, default=128, help='prefix len')
 parser.add_argument('--T', type=int, default=1000, help='repeat times')
 parser.add_argument('--declen_list', nargs='+', type=int, help='Group of dec len')
 parser.add_argument('--rank_group', nargs='+', type=int, help='Group of ranks')
-parser.add_argument('--out_dir', type=str, default="results", help='Output directory')
-parser.add_argument('--profile', action='store_true', help='Whether to profile')
+parser.add_argument('--profile', type=Path, default=Path("tests/profile.txt"), help='Profile path.')
+
 args = parser.parse_args()
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -45,10 +44,6 @@ dec_list = args.declen_list
 warm_up = 10
 T = args.T
 
-use_tp = len(args.rank_group)>1
-os.makedirs(args.out_dir, exist_ok=True)
-profile = f"{args.out_dir}/P{prefix_len}_B{max_batch_size}"
-
 llm = LMBackend(dtype=precision, device=device, dec_list=dec_list)
 llm.load_model(checkpoint_path, use_tp=use_tp, rank_group=args.rank_group, group = global_group)
 if args.compile:
@@ -58,26 +53,33 @@ llm.setup_caches(max_batch_size=max_batch_size, max_seq_length=max_seq_length)
 prompt = torch.randint(low=3, high=30000, size=(max_batch_size, prefix_len), device=device)
 llm.encode(input_ids=prompt)
 
+profile = args.profile
+
+total_time = 0.0
+if (not profile) or (use_tp and rank != 0):
+    prof = contextlib.nullcontext()
+else:
+    torch.profiler._utils._init_for_cuda_graphs()
+    prof = torch.profiler.profile()
 for declen in dec_list:
-    dec = torch.randint(low=3, high=30000, size=(max_batch_size, declen), device=device)
     with torch.inference_mode():
             for _ in range(warm_up):
+                dec = torch.randint(low=3, high=30000, size=(max_batch_size, declen), device=device)
                 logits = llm.inference(input_ids=dec, benchmark=True)
-            torch.cuda.synchronize()
-            t1 = time.perf_counter()
-            for i in range(T):
-                if not profile or (i != T - 1) or (use_tp and rank != 0):
-                    prof = contextlib.nullcontext()
+            for _ in range(T):
+                dec = torch.randint(low=3, high=30000, size=(max_batch_size, declen), device=device)
+                torch.cuda.synchronize()
+                t1 = time.perf_counter()
+                logits = llm.inference(input_ids=dec, benchmark=True)
+                torch.cuda.synchronize()
+                t2 = time.perf_counter()
+                total_time += t2 - t1
+    print("Batch Size:{}, Max Length :{}, Decode Length :{}, Prefix Length :{}, inference time:{}s".format(max_batch_size, max_seq_length, declen, prefix_len, total_time / T))
+    if declen == 4:
+        with prof:
+            llm.inference(input_ids=dec, benchmark=True)
+        if hasattr(prof, "export_chrome_trace"):
+                if use_tp:
+                    prof.export_chrome_trace(f"{profile}_rank_{rank}.json")
                 else:
-                    torch.profiler._utils._init_for_cuda_graphs()
-                    prof = torch.profiler.profile(profile_memory=False, with_stack=False, with_flops=False, with_modules=False)
-                with prof:
-                    logits = llm.inference(input_ids=dec, benchmark=True)
-                if hasattr(prof, "export_chrome_trace"):
-                    if use_tp:
-                        prof.export_chrome_trace(f"{profile}_{declen}_rank_{rank}.json")
-                    else:
-                        prof.export_chrome_trace(f"{profile}_{declen}.json")
-            torch.cuda.synchronize()
-            t2 = time.perf_counter()
-    print("Batch Size:{}, Max Length :{}, Decode Length :{}, Prefix Length :{}, inference time:{}s".format(max_batch_size, max_seq_length, declen, prefix_len, (t2 - t1)/ T))
+                    prof.export_chrome_trace(f"{profile}.json")
