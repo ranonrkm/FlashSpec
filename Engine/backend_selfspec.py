@@ -70,7 +70,7 @@ class LMBackend:
                 model=self.model, 
                 x=input_ids.clone(),
                 input_pos=position_ids.clone(), 
-                cache_seqlens= self.draft_cachelens.clone()) if dec_len in self.model_forward.keys() else self.model.draft_forward(input_ids.clone(), position_ids.clone(), self.draft_cachelens.clone())
+                cache_seqlens= self.draft_cachelens.clone()) if dec_len in self.draft_forward.keys() else self.model.draft_forward(input_ids.clone(), position_ids.clone(), self.draft_cachelens.clone())
             if not benchmark:
                 if cachelen_update == None:
                     self.draft_cachelens += dec_len
