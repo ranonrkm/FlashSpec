@@ -10,6 +10,7 @@ from transformers import AutoTokenizer
 from torch.utils.data.dataloader import DataLoader
 from tqdm import tqdm
 import argparse
+import contextlib
 from FlashSpec.Engine.backend_selfspec import LMBackend
 
 parser = argparse.ArgumentParser(description='Process model configuration and partitions.')
@@ -61,7 +62,7 @@ engine = LMBackend(dtype=DTYPE, device=DEVICE, dec_list=target_dec_list, draft_d
 engine.load_model(checkpoint_path, use_tp=use_tp, rank_group = args.rank_group, group=global_group)
 if args.compile:
     engine.compile()
-engine.setup_caches(max_batch_size=BATCH_SIZE, max_seq_length=MAX_LEN_TARGET, streamingllm_budget=args.streamingllm_budget, buffer=args.gen_len+args.gamma+1)
+engine.setup_caches(max_batch_size=BATCH_SIZE, max_seq_length=MAX_LEN_TARGET, streamingllm_budget=args.streamingllm_budget, buffer=args.gen_len+args.gamma)
 target_sample = cuda_graph_for_sampling_argmax_batch(device=DEVICE, dtype=DTYPE, batch_size=BATCH_SIZE, idx_len=args.gamma+1)
 draft_sample = {}
 for i in [1, 2]:
@@ -90,6 +91,8 @@ if benchmark:
     target_time = 0.0
     verify_loop = 0.0
 
+prof = contextlib.nullcontext()
+
 for step, batch in tqdm(enumerate(dataloader), total=num_eval_steps):
     if step >= num_eval_steps:
         break
@@ -113,22 +116,27 @@ for step, batch in tqdm(enumerate(dataloader), total=num_eval_steps):
     start = time.perf_counter()
     while terminal == False:
 
+        # Draft speculation
+        if (step == num_eval_steps - 1) and (rank == 0):
+            torch.profiler._utils._init_for_cuda_graphs()
+            prof = torch.profiler.profile()
+
         if benchmark:
             torch.cuda.synchronize()
             t1 = time.time()
 
-        # Draft speculation
-        for i in range(args.gamma):
-            if i == 0:
-                if next_double:
-                    # The cachelens should increase 1 or 2
-                    next_tokens = draft_sample[2](engine.draft_inference(double_buffer, cachelen_update=cachelens_update))
-                    tokens_buffer[:,i+1:i+2] = next_tokens.gather(1, cachelens_update.view(-1,1) - 1)
-                    next_double = False
-                else:
-                    tokens_buffer[:,i+1:i+2] = draft_sample[1](engine.draft_inference(tokens_buffer[:, i].view(-1,1)))
-                continue
-            tokens_buffer[:,i+1:i+2] = draft_sample[1](engine.draft_inference(tokens_buffer[:, i].view(-1,1)))
+        with prof:    
+            for i in range(args.gamma):
+                if i == 0:
+                    if next_double:
+                        # The cachelens should increase 1 or 2
+                        next_tokens = draft_sample[2](engine.draft_inference(double_buffer, cachelen_update=cachelens_update))
+                        tokens_buffer[:,i+1:i+2] = next_tokens.gather(1, cachelens_update.view(-1,1) - 1)
+                        next_double = False
+                    else:
+                        tokens_buffer[:,i+1:i+2] = draft_sample[1](engine.draft_inference(tokens_buffer[:, i].view(-1,1)))
+                    continue
+                tokens_buffer[:,i+1:i+2] = draft_sample[1](engine.draft_inference(tokens_buffer[:, i].view(-1,1)))
 
         if benchmark:
             torch.cuda.synchronize()
@@ -137,14 +145,14 @@ for step, batch in tqdm(enumerate(dataloader), total=num_eval_steps):
 
         # Target Verification
         target_logits = engine.inference(tokens_buffer)
-        target_tokens = target_sample(target_logits)
-        target_steps+=1
 
         if benchmark:
             torch.cuda.synchronize()
             t3 = time.time()
             target_time+=t3-t2
 
+        target_tokens = target_sample(target_logits)
+        target_steps+=1
 
     # Verify loop
         bonus_tokens = torch.full((BATCH_SIZE, 1), 0, device=DEVICE).long()
@@ -238,3 +246,6 @@ for step, batch in tqdm(enumerate(dataloader), total=num_eval_steps):
             verify_loop = 0.0
     if use_tp:
         dist.barrier()
+
+if hasattr(prof, "export_chrome_trace"):
+    prof.export_chrome_trace(f"prof_selfspec.json")

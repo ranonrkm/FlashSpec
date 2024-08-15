@@ -97,7 +97,6 @@ class KVCache(nn.Module):
         self.register_buffer('draft_v_cache', torch.zeros(draft_cache_shape, dtype=dtype))
         self.register_buffer('batch_indices',torch.arange(max_batch_size).unsqueeze(1))
         self.streaming_budget = streaming_budget
-        self.check = False
 
     # def update(self, cache_seqs, k_val, v_val):
     #     # cache_seqs: [B], k_val: [B, S, H, D]
@@ -125,10 +124,11 @@ class KVCache(nn.Module):
     def prefill(self, cache_len, k_val, v_val):
         k_out = self.draft_k_cache
         v_out = self.draft_v_cache
-        if cache_len + k_val.shape[1] <= self.streaming_budget:
-            k_out[:, cache_len: cache_len + k_val.shape[1]] = k_val
-            v_out[:, cache_len: cache_len + k_val.shape[1]] = v_val
-            return k_out[:, :cache_len+k_val.shape[1]], v_out[:, :cache_len+k_val.shape[1]]
+        cache_len_int = cache_len[0].item()
+        if cache_len_int + k_val.shape[1] <= self.streaming_budget:
+            k_out[:, cache_len_int: cache_len_int + k_val.shape[1]] = k_val
+            v_out[:, cache_len_int: cache_len_int + k_val.shape[1]] = v_val
+            return k_out[:, :cache_len_int+k_val.shape[1]], v_out[:, :cache_len_int+k_val.shape[1]]
         new_k = torch.cat((k_out[:, 16:self.streaming_budget], k_val), dim=1)[:, -self.streaming_budget+16:]
         new_v = torch.cat((v_out[:, 16:self.streaming_budget], v_val), dim=1)[:, -self.streaming_budget+16:]
         k_out[:, 16:self.streaming_budget] = new_k
@@ -165,8 +165,7 @@ class Transformer(nn.Module):
             dtype = self.output.scales_and_zeros.dtype
         for i, b in enumerate(self.layers):
             b.attention.kv_cache = KVCache(max_batch_size, max_seq_length, self.config.n_local_heads, head_dim, dtype, streaming_budget, buffer)
-            if i == 0:
-                b.attention.kv_cache.check = True
+            b.attention.layer_idx = i
 
         if (self.config.high_freq_factor is not None) and (self.config.low_freq_factor is not None):
             self.freqs_cis = precompute_freqs_cis(self.config.block_size, self.config.dim // self.config.n_head, self.config.rope_base,dtype,
@@ -206,7 +205,7 @@ class Transformer(nn.Module):
         freqs_cis = self.freqs_cis[input_pos]
         x = self.tok_embeddings(idx)
         for i, layer in enumerate(self.layers):
-            x = layer.draft_forward(x, freqs_cis, self.streaming_freqs, cache_seqlens)
+            x = layer.draft_forward(x, freqs_cis, cache_seqlens)
         x = self.norm(x)
         logits = self.output(x)
         return logits
@@ -245,8 +244,8 @@ class TransformerBlock(nn.Module):
         out = h + self.feed_forward(self.ffn_norm(h))
         return out
     
-    def draft_forward(self, x: Tensor, freqs_cis: Tensor, streaming_freqs: Tensor, cache_seqlens: Tensor) -> Tensor:
-        h = x + self.attention.draft_forward(self.attention_norm(x), freqs_cis, streaming_freqs, cache_seqlens)
+    def draft_forward(self, x: Tensor, freqs_cis: Tensor, cache_seqlens: Tensor) -> Tensor:
+        h = x + self.attention.draft_forward(self.attention_norm(x), freqs_cis, cache_seqlens)
         out = h + self.feed_forward.draft_forward(self.ffn_norm(h))
         return out
 
@@ -298,8 +297,7 @@ class Attention(nn.Module):
         q = apply_rotary_emb(q, freqs_cis)
         k = apply_rotary_emb(k, freqs_cis)
 
-        if self.kv_cache is not None:
-            k_cache, v_cache = self.kv_cache.k_cache, self.kv_cache.v_cache
+        k_cache, v_cache = self.kv_cache.k_cache, self.kv_cache.v_cache
 
         # for decoding and verification, use gqa_custom
         y = self._attn(q, k_cache, v_cache, k, v, cache_seqlens)
@@ -340,7 +338,7 @@ class Attention(nn.Module):
             dist.all_reduce(y)
         return y
     
-    def draft_forward(self, x: Tensor, freqs_cis: Tensor, streaming_freqs: Tensor, cache_seqlens: Tensor) -> Tensor:
+    def draft_forward(self, x: Tensor, freqs_cis: Tensor, cache_seqlens: Tensor) -> Tensor:
         bsz, seqlen, _ = x.shape
 
         kv_size = self.n_local_heads * self.head_dim

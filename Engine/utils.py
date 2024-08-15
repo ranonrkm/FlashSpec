@@ -91,6 +91,7 @@ def gqa_custom(q, k_cache, v_cache, k, v, cache_seqlens):
     k_new.scatter_(1, insert_indices, k)
     v_new.scatter_(1, insert_indices, v)
     
+    # print(q_reshaped.shape, k_cache.shape, k_new.shape)
     y, lse = flash_attn_with_kvcache(q_reshaped, k_cache, v_cache, k_new, v_new, cache_seqlens=cache_seqlens, causal=True, return_softmax_lse=True)
     
     extra = extra.expand_as(lse)
